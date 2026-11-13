@@ -207,7 +207,7 @@ test('numerals: native script, mixed script, fuzzy, digit preference', () => {
   for (const [t, v] of cases) assert.equal(normaliseAmount(t, 'hi').value, v, t);
   assert.equal(normaliseAmount('তিন শো চল্লিশ', 'bn').value, 340);
   assert.equal(normaliseAmount('তিনশো', 'bn').value, 300);
-  assert.equal(normaliseAmount('ঢাই কেজি', 'bn').kind, null); // not a Bengali idiom: nothing invented
+  assert.equal(normaliseAmount('ঢাই কেজি', 'bn').kind, 'quantity'); // union lexicon via translit: "dhai kg", never money
   assert.equal(normaliseAmount('ढाई किलो', 'hi').kind, 'quantity');
   // Fuzzy ASR spellings, numeral lexicon only.
   assert.equal(normaliseAmount('teen sau chalees', 'hi').value, 340);
@@ -343,4 +343,86 @@ test('securestore: AES-256-GCM transcripts, no plaintext on disk, purge', () => 
   assert.equal(L2.balancePaise(c), 77700, 'transcript purge leaves the ledger alone');
   L2.close();
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+const { toLatin, canonicalKey } = require('./core/translit');
+
+test('translit: deterministic char map, schwa deletion, nukta, Bengali inherent o', () => {
+  assert.equal(toLatin('उधार'), 'udhaar');
+  assert.equal(toLatin('रमेश'), 'ramesh');
+  assert.equal(toLatin('समझना'), 'samajhna'); // medial schwa
+  assert.equal(toLatin('मित्र'), 'mitra');     // schwa kept after conjunct
+  assert.equal(toLatin('क़ ख़ ग़ ज़ ड़ ढ़ फ़'), 'qa kha ga za ra rha fa');
+  assert.equal(toLatin('पाँच दुःख'), 'paanch duhkh');
+  assert.equal(toLatin('ক'), 'ko');
+  assert.equal(toLatin('রমেশের ধার'), 'romesher dhar');
+  assert.equal(toLatin('নয় বড়'), 'noy bor');
+  assert.equal(toLatin('ৰ ৱ', 'beng'), 'ro wo');
+  assert.equal(canonicalKey('रमेश'), canonicalKey('Ramesh'));
+  assert.equal(canonicalKey('chaalis'), canonicalKey('chaalees'));
+  const raw = 'रमेश का 340 उधार';
+  toLatin(raw);
+  assert.equal(raw, 'रमेश का 340 उधार'); // input untouched
+});
+
+test('numerals: Marathi Devanagari table, scale variants, canonical guards', () => {
+  for (const [t, v] of [['चाळीस', 40], ['सदतीस', 37], ['पंचवीस', 25], ['एकवीस', 21], ['पन्नास', 50], ['तीन शंभर', 300], ['वीस', 20]]) {
+    assert.equal(normaliseAmount(t, 'mr').value, v, t);
+  }
+  for (const t of ['हज़ार', 'हजार', 'হাজার', 'hazaar', 'hazar', 'hajaar']) assert.equal(normaliseAmount(t, 'hi').value, 1000, t);
+  for (const t of ['सौ', 'শো', 'sau']) assert.equal(normaliseAmount(t, 'hi').value, 100, t);
+  for (const t of ['लाख', 'লাখ', 'lakh']) assert.equal(normaliseAmount(t, 'hi').value, 100000, t);
+  // "pachaasee" folds to the key shared by 50 (pachaas) and 85 (pachaasi): match neither.
+  assert.equal(normaliseAmount('pachaasee', 'hi').value, null);
+  // Exact native numeral is never overridden by a loose Latin match.
+  assert.equal(normaliseAmount('सात', 'hi').value, 7);
+});
+
+test('parser: native-script utterances end to end', () => {
+  const T = { today: TODAY };
+  const a = parse('रमेश का 340 उधार', T);
+  assert.deepEqual([a.entries[0].customer.name, a.entries[0].paise, a.entries[0].direction, a.entries[0].date], ['Ramesh', 34000, 'credit', TODAY]);
+  assert.equal(parse('रमेश ने 200 दिया', T).entries[0].direction, 'payment');
+  assert.equal(parse('रमेश को 200 दिया', T).entries[0].direction, 'credit');
+
+  const two = parse('रमेश का तीन सौ चालीस उधार, कल 200 दिया था', T);
+  assert.deepEqual(two.entries.map((e) => [e.direction, e.paise, e.date]), [['credit', 34000, TODAY], ['payment', 20000, YESTERDAY]]);
+
+  const p = parse('रमेश कल 200 देगा', T);
+  assert.equal(p.intent, 'promise_note');
+  const L = openLedger(':memory:');
+  const id = L.addCustomer(p.promise.customer.name);
+  L.addPromise({ customerId: id, paise: p.promise.paise, dueOn: p.promise.due_on });
+  assert.equal(L.balancePaise(id), 0, 'promise leaves balance unchanged');
+  L.close();
+
+  const lastIntent = parse('Ramesh ka 340 udhaar', T);
+  const c = parse('नाही, 430', { ...T, lastIntent });
+  assert.equal(c.intent, 'correct_slot');
+  assert.equal(c.slot, 'amount');
+  assert.equal(c.patched.entries[0].paise, 43000);
+
+  const roster = { ...T, customers: [{ id: 1, name: 'Ramesh' }] };
+  for (const t of ['রমেশের 340 ধার', 'रमेशचा 340 उधार', 'रमेश ka 340 udhaar', 'रमेश का 340 उधार']) {
+    const r = parse(t, roster);
+    assert.deepEqual([r.entries[0].customer.id, r.entries[0].paise, r.entries[0].direction], [1, 34000, 'credit'], t);
+  }
+  // Without a roster the suffix is still stripped from the name.
+  const bn = parse('রমেশের 340 ধার', T).entries[0].customer;
+  assert.equal(canonicalKey(bn.name), canonicalKey('Ramesh'));
+  assert.equal(bn.display, 'রমেশ');
+  const mr = parse('रमेशचा 340 उधार', T).entries[0].customer;
+  assert.deepEqual([mr.name, mr.display], ['Ramesh', 'रमेश']);
+
+  const teja = parse('तेजा का 340 उधार', T);
+  assert.deepEqual([teja.entries[0].customer.name, teja.entries[0].paise], ['Teja', 34000]);
+});
+
+test('original script is preserved in returned text and stored transcript', () => {
+  const text = 'रमेश का तीन सौ चालीस उधार, कल 200 दिया था';
+  const r = parse(text, { today: TODAY });
+  assert.equal(r.text, text);
+  assert.equal(r.entries[0].customer.display, 'रमेश');
+  const S = new SecureStore(':memory:', 'ef'.repeat(32));
+  for (const t of [text, 'রমেশের 340 ধার', 'रमेशचा 340 उधार']) assert.equal(S.get(S.put(t)), t);
 });

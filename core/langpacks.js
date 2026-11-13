@@ -1,6 +1,8 @@
 'use strict';
 // Language packs. Parsing uses the merged UNION lexicon; a pack's own templates are used only for REPLIES.
 
+const { lightKey, canonicalKey } = require('./translit');
+
 const w = (s) => s.trim().split(/\s+/).filter(Boolean);
 
 const PACKS = {
@@ -256,4 +258,24 @@ function render(lang, key, vars = {}) {
     .replace(/\s{2,}/g, ' ').replace(/\s+([.,?])/g, '$1').trim(); // empty vars leave no stray spaces
 }
 
-module.exports = { PACKS, UNION, detectLang, render };
+// Resolve a (possibly transliterated) token to a lexicon word: EXACT, then light key (long vowels), then canonical key.
+// A key shared by words with different roles (ka/ko/ke all fold to "k") resolves to nothing.
+const ROLE_FIELDS = [...LIST_FIELDS.filter((f) => !SUFFIX_FIELDS.has(f)), ...DATE_KEYS];
+const role = (word) => ROLE_FIELDS.filter((f) => UNION[f].has(word)).join(',');
+function indexBy(keyFn) {
+  const m = new Map();
+  for (const word of UNION.all) { const k = keyFn(word); if (!m.has(k)) m.set(k, []); m.get(k).push(word); }
+  return m;
+}
+const LIGHT = indexBy(lightKey), CANON = indexBy(canonicalKey);
+const resolve = (m, k) => { const ws = m.get(k); return ws && new Set(ws.map(role)).size === 1 ? ws[0] : null; };
+function lexWord(w) {
+  if (UNION.all.has(w)) return w;
+  const light = [...w].length >= 3 && resolve(LIGHT, lightKey(w)); // "aa" must not become English "a"
+  if (light) return light;
+  const c = canonicalKey(w);
+  // shortcut: canonical keys under 4 chars are too collision-prone (Kalu -> kal); revisit with real ASR logs.
+  return c.length >= 4 ? resolve(CANON, c) : null;
+}
+
+module.exports = { PACKS, UNION, detectLang, render, lexWord };

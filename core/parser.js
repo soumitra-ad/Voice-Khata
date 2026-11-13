@@ -1,7 +1,8 @@
 'use strict';
 // Deterministic utterance -> intent JSON. No LLM here; an LLM may only be a caller-side fallback.
-const { tokenize, scanTokens, pickMoney, isNumeralWord, normText } = require('./numerals');
-const { PACKS, UNION: U, detectLang, render } = require('./langpacks');
+const { tokenize, scanTokens, pickMoney, isNumeralWord, isNumeralToken, normText } = require('./numerals');
+const { PACKS, UNION: U, detectLang, render, lexWord } = require('./langpacks');
+const { canonicalKey } = require('./translit');
 const G = require('./guardrails');
 
 const PUNCT = new Set([',', '?', '|', '₹']);
@@ -40,6 +41,11 @@ function clauseDate(words, lang, today) {
 const aliasList = (c) => [c.name, ...(Array.isArray(c.aliases) ? c.aliases : String(c.aliases || '').split(','))].filter(Boolean);
 const nameTokens = (s) => normText(s).toLowerCase().split(/\s+/).filter(Boolean);
 const SUFFIX = [['agent', U.agent_suffix], ['recipient', U.recipient_suffix], ['possessive', U.possessive_suffix]];
+const POSS_SUFFIX = [...U.possessive_suffix].sort((a, b) => b.length - a.length);
+const NATIVE_POSS = ['च्या', 'चा', 'ची', 'चे', 'ের', 'এর']; // same suffixes in original script, for the display name
+// Roster names match on canonical keys too, so रमेश / romesh match stored "Ramesh".
+const sameName = (a, b) => a === b || canonicalKey(a) === canonicalKey(b);
+const cust = (c) => ({ id: c.id, name: c.name, ...(c.display ? { display: c.display } : {}) });
 
 // Who is this clause about? Known customers first (alias + attached case suffix aware), else first unknown-word run.
 function findCustomer(toks, used, customers) {
@@ -55,8 +61,8 @@ function findCustomer(toks, used, customers) {
             if (used.has(i)) continue;
             const w = words[i];
             let suffix = null;
-            if (w !== k) {
-              const m = SUFFIX.find(([, set]) => [...set].some((sf) => w === k + sf));
+            if (!sameName(w, k)) {
+              const m = SUFFIX.find(([, set]) => [...set].some((sf) => sameName(w, k + sf)));
               if (!m) continue;
               suffix = m[0];
             }
@@ -78,7 +84,19 @@ function findCustomer(toks, used, customers) {
     if (!unknown(i)) continue;
     let j = i;
     while (unknown(j)) j++;
-    return { id: null, name: cap(words.slice(i, j).join(' ')), idx: i, len: j - i, suffix: null };
+    const parts = toks.slice(i, j), names = parts.map((x) => x.t), shown = parts.map((x) => x.raw);
+    let suffix = null;
+    // Attached possessive in native script: রমেশের = Ramesh + -er, रमेशचा = Ramesh + -cha. Name keeps the stem.
+    const lastTok = parts[parts.length - 1];
+    const sf = lastTok.native && POSS_SUFFIX.find((x) => lastTok.t.endsWith(x) && lastTok.t.length - x.length >= 3);
+    if (sf) {
+      names[names.length - 1] = lastTok.t.slice(0, -sf.length);
+      const ns = NATIVE_POSS.find((x) => lastTok.raw.endsWith(x));
+      if (ns) shown[shown.length - 1] = lastTok.raw.slice(0, -ns.length);
+      suffix = 'possessive';
+    }
+    const display = parts.some((x) => x.native) ? shown.join(' ') : undefined;
+    return { id: null, name: cap(names.join(' ')), display, idx: i, len: j - i, suffix };
   }
   return null;
 }
@@ -145,7 +163,7 @@ function parseEntries(toks, base, lang, ctx, today, opts) {
     const who = findCustomer(clause, usedSet(runs), ctx.customers);
     if (who && who.ambiguous) return disambiguate(base, who, lang, { entries });
     const inherited = !who;
-    if (who) topic = { id: who.id, name: who.name };
+    if (who) topic = cust(who);
     const dir = directionOf(words, who, inherited && !!topic, lang);
     if (!money) {
       if (dir.direction) return { ...base, intent: 'clarify', slot: 'amount', entries, question: render(lang, 'clarify_amount') };
@@ -243,14 +261,22 @@ function parseCorrection(rest, base, lang, ctx, today, opts) {
  *        openPromise?: {customer, paise, due_on, id?} }
  */
 function parse(text, ctx = {}) {
-  const toks = tokenize(text);
+  // Transliterated tokens resolve to lexicon words; tok.raw and the returned `text` keep the original script.
+  const toks = tokenize(text).map((x) => {
+    if (PUNCT.has(x.t) || /^\d/.test(x.t) || U.all.has(x.t) || isNumeralToken(x)) return x;
+    const r = lexWord(x.t);
+    return r ? { ...x, t: r } : x;
+  });
   const words = toks.map((x) => x.t).filter((w) => !PUNCT.has(w));
   const lang = ctx.lang || detectLang(words);
   const today = ctx.today || localToday();
   const base = { text, lang };
   const has = (set) => words.some((w) => set.has(w));
   // Known customer names are never fuzzy-matched into numbers.
-  const opts = { exclude: new Set((ctx.customers || []).flatMap((c) => aliasList(c).flatMap(nameTokens))) };
+  // A word right before a possessive marker (ka/ke/का/-er/-cha) is a name: never canonical/fuzzy-folded into a number.
+  const noLoose = new Set(toks.filter((x, i) => !/^\d/.test(x.t) && ((toks[i + 1] && U.possessive.has(toks[i + 1].t)) ||
+    (x.native && POSS_SUFFIX.some((sf) => x.t.endsWith(sf))))).map((x) => x.t));
+  const opts = { exclude: new Set((ctx.customers || []).flatMap((c) => aliasList(c).flatMap(nameTokens))), noLoose };
 
   if (!words.length) return { ...base, intent: 'clarify', slot: 'utterance', question: render(lang, 'clarify_repeat') };
   if (has(U.lending)) return { ...base, intent: 'refuse', ...G.refuseLending(lang) };
@@ -286,13 +312,13 @@ function parse(text, ctx = {}) {
   if (has(U.reminder)) {
     const c = who();
     if (c && c.ambiguous) return disambiguate(base, c, lang);
-    return c ? { ...base, intent: 'reminder_optin', customer: { id: c.id, name: c.name } }
+    return c ? { ...base, intent: 'reminder_optin', customer: cust(c) }
       : { ...base, intent: 'clarify', slot: 'customer', question: render(lang, 'clarify_customer') };
   }
   if (!money && (has(U.query) || toks.some((x) => x.t === '?'))) {
     const c = who();
     if (c && c.ambiguous) return disambiguate(base, c, lang);
-    if (c) return { ...base, intent: 'query_balance', customer: { id: c.id, name: c.name } };
+    if (c) return { ...base, intent: 'query_balance', customer: cust(c) };
     const d = clauseDate(words, lang, today);
     if (d) {
       const direction = has(U.payment_verbs) ? 'payment' : has(U.credit_verbs) ? 'credit' : null;
