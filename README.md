@@ -301,6 +301,34 @@ erDiagram
 `TTFB = play_start − speech_end`, both on the client clock, aggregated as rolling p50/p95 over the last 50 turns.
 Targets: **p50 < 900 ms, p95 < 1.6 s**. In `MOCK_VOICE=1` the HUD says "MOCK — not a real measurement".
 
+### Verified against the live API (2026-11-13)
+
+Everything below was run with real credentials, not mocks. Timbre synthesised each line, and that audio was fed
+back into the server as if it were microphone frames, so the whole path is exercised: TTS → PCM16 16 kHz frames →
+Prisma → parser → read-back → Timbre.
+
+| Utterance (spoken by Timbre, recognised by Prisma) | Recognised as | Release → first reply audio |
+|---|---|---|
+| रमेश का 340 रुपये उधार, कल 200 दिया था | same, ASCII digits, Devanagari | 200 ms |
+| गली वाला | गली वाला | 347 ms |
+| नहीं, 430 | नहीं, 430। | 672 ms |
+| हाँ | हाँ | 96 ms |
+| रमेश का टोटल कितना है? | same | 126 ms |
+| सुरेश को 250 उधार | सुरेश को 250 उधार। | 144 ms |
+
+- **p50 ≈ 170 ms**, worst turn 672 ms — inside the 900 ms target with room to spare. Audio is streamed, so the
+  first chunk matters, not the whole reply.
+- The first utterance produced **two entries** (`+₹340` today, `−₹200` on 2026-11-12 from "kal" + "diya tha"), the
+  agent asked *कौन से रमेश?*, the answer *गली वाला* resolved it, *नहीं, 430* corrected the amount, *हाँ* committed
+  atomically and spoke the new balance. The ledger matched the arithmetic on every pass.
+- Prisma reported `sample_rate 16000, chunk_size 512, partials_enabled false, language_code hi-IN` and
+  `detected_language_code: hi-IN`; Timbre streamed 30 chunks for 2.56 s of audio with first audio at 646 ms.
+- Endpoints confirmed as documented: `wss://api.vachana.ai/stt/v3/stream` (model `prisma-v3.0`) and
+  `wss://api.vachana.ai/api/v1/tts` (model `timbre-v3.0`, voice `Shivani`), with the key in the **`X-API-Key-ID`**
+  header. No `GNANI_*` value needed changing from the defaults.
+- Partial transcripts are disabled on this Prisma connection, so barge-in relies on the client's 180 ms audio
+  detector and on two-word server partials; that path is exercised only in mock mode.
+
 ## Deployment
 
 The app is a long-lived WebSocket server with a local SQLite ledger, so it needs a host that keeps a process alive
