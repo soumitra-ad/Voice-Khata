@@ -25,8 +25,49 @@ services:
       # Left blank, the server generates an in-memory key and transcripts become unreadable after a restart.
       - key: TRANSCRIPT_KEY
         sync: false
-      # Live voice only (MOCK_VOICE=0). Set every one of these in the dashboard from the Gnani docs;
-      # the adapter names and defaults are listed in .env.example.
-      # GNANI_API_KEY, GNANI_AUTH_HEADER, GNANI_AUTH_VALUE, GNANI_LANG_MAP,
-      # GNANI_STT_WS_URL, GNANI_STT_HEADERS, GNANI_STT_*_EVENT, GNANI_STT_*_FIELD,
-      # GNANI_TTS_WS_URL, GNANI_TTS_VOICE, GNANI_TTS_REQUEST_TEMPLATE, GNANI_TTS_*_EVENT
+      # ---- Live Gnani wiring (verified against the live API on 2026-11-13) ----
+      # None of this is secret: it is the documented endpoint and event map. The ONLY value you must add is
+      # GNANI_API_KEY below (from https://app.gnani.ai/voice). Then set MOCK_VOICE=0 to use it.
+      - key: GNANI_AUTH_HEADER
+        value: x-api-key-id
+      - key: GNANI_AUTH_VALUE
+        value: "{key}"
+      - key: GNANI_LANG_MAP
+        value: hi:hi-IN,mr:mr-IN,bn:bn-IN,en:en-IN
+      - key: GNANI_STT_WS_URL
+        value: wss://api.vachana.ai/stt/v3/stream
+      - key: GNANI_STT_HEADERS
+        value: '{"model":"prisma-v3.0","language_code":"{lang}","x-sample-rate":"16000","x-min-silence-ms":"2000","x-idle-timeout-sec":"900"}'
+      - key: GNANI_STT_END_MESSAGE
+        value: '{"type":"commit"}'
+      - key: GNANI_STT_EVENT_FIELD
+        value: type
+      - key: GNANI_STT_TEXT_FIELD
+        value: text
+      - key: GNANI_STT_FINAL_EVENT
+        value: transcript
+      - key: GNANI_STT_SPEECH_EVENT
+        value: speech_start
+      - key: GNANI_STT_ERROR_EVENT
+        value: error
+      - key: GNANI_STT_FINAL_TIMEOUT_MS
+        value: "2500"
+      - key: GNANI_TTS_WS_URL
+        value: wss://api.vachana.ai/api/v1/tts
+      - key: GNANI_TTS_VOICE
+        value: Shivani
+      - key: GNANI_TTS_REQUEST_TEMPLATE
+        value: '{"text":"{text}","voice":"{voice}","model":"timbre-v3.0","language":"{lang}","audio_config":{"sample_rate":16000,"num_channels":1,"sample_width":2,"encoding":"linear_pcm","container":"raw"}}'
+      - key: GNANI_TTS_AUDIO_FIELD
+        value: data.audio
+      - key: GNANI_TTS_EVENT_FIELD
+        value: type
+      - key: GNANI_TTS_END_EVENT
+        value: complete
+      - key: GNANI_TTS_ERROR_EVENT
+        value: error
+      - key: GNANI_TTS_SAMPLE_RATE
+        value: "16000"
+      # The one secret. sync: false = Render asks for it and never stores it in this file.
+      - key: GNANI_API_KEY
+        sync: false

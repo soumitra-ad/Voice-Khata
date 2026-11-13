@@ -341,7 +341,9 @@ function's duration limit, and there is no local filesystem for SQLite. Use Rend
    for a Node web service with a `/health` check.
 2. Set `TRANSCRIPT_KEY` to 64 hex characters:
    `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
-3. It deploys in mock mode. Set `MOCK_VOICE=0` only after every `GNANI_*` value is in the dashboard.
+3. Render prompts for one secret, `GNANI_API_KEY` (from `https://app.gnani.ai/voice`). The endpoint, header and
+   event wiring is already in `render.yaml`, so nothing else needs typing.
+4. It still deploys in mock mode. Set `MOCK_VOICE=0` once `GNANI_API_KEY` is in place, or every Gnani call returns 401.
 
 ### Fly.io (Docker)
 
