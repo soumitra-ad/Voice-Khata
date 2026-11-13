@@ -437,6 +437,11 @@ app.get('/transcripts', (req, res) => {
   res.json({ ok: true, transcripts: store.list(50) });
 });
 
+// Liveness for a hosting platform (Render/Fly health checks). No secrets, no request bodies.
+app.get('/health', (req, res) => {
+  res.json({ ok: true, mock: MOCK, driver: ledger.driver, customers: ledger.findCustomers('').length, transcripts: store.count() });
+});
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 1 << 20 });
 

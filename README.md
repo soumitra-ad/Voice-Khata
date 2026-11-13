@@ -127,6 +127,7 @@ flowchart LR
 | `core/langpacks.js` | Per-language templates, reply-script rendering, union lexicon, language detection |
 | `data/demo-roster.json` | Synthetic customers only (two Rameshes, on purpose) |
 | `scripts/probe.js` | Live-mode diagnostic: stream a WAV to Prisma and dump raw events |
+| `render.yaml`, `Dockerfile`, `fly.toml` | Deployment: Render blueprint, portable image, Fly machine with a mounted volume |
 
 ### One turn, end to end
 
@@ -294,6 +295,41 @@ erDiagram
 
 `TTFB = play_start − speech_end`, both on the client clock, aggregated as rolling p50/p95 over the last 50 turns.
 Targets: **p50 < 900 ms, p95 < 1.6 s**. In `MOCK_VOICE=1` the HUD says "MOCK — not a real measurement".
+
+## Deployment
+
+The app is a long-lived WebSocket server with a local SQLite ledger, so it needs a host that keeps a process alive
+and gives it a writable disk. **Vercel cannot run it:** a custom `server.js` is ignored, a WebSocket is closed at the
+function's duration limit, and there is no local filesystem for SQLite. Use Render or Fly.
+
+### Render (blueprint)
+
+1. Push this repo to GitHub, then in Render choose **New → Blueprint** and pick the repo. `render.yaml` is already set up
+   for a Node web service with a `/health` check.
+2. Set `TRANSCRIPT_KEY` to 64 hex characters:
+   `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+3. It deploys in mock mode. Set `MOCK_VOICE=0` only after every `GNANI_*` value is in the dashboard.
+
+### Fly.io (Docker)
+
+```sh
+fly launch --dockerfile Dockerfile --no-deploy
+fly volumes create khata_data --size 1          # mount point is configured in fly.toml
+fly secrets set TRANSCRIPT_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+fly deploy
+```
+
+`fly.toml` mounts the volume at `/data` and sets `LEDGER_DB=/data/khata.db`, so the ledger survives a restart.
+
+### Hosting limits that matter for a demo
+
+- **Render free plan:** the service sleeps after inactivity (the WebSocket drops) and its disk is ephemeral, so the
+  ledger and transcripts reset on restart. A paid instance or an attached disk fixes both.
+- **Render build:** `npm ci --omit=dev` may skip `better-sqlite3`'s build script; the ledger then falls back to
+  `node:sqlite` automatically. `/health` reports which driver is in use.
+- **Fly:** keep at least one machine warm (`min_machines_running = 1`) if judges will connect cold; a stopped machine
+  drops the socket, and in-memory session state (a pending read-back) does not survive that.
+- **Secrets:** set `TRANSCRIPT_KEY` and every `GNANI_*` value as platform secrets. Never commit `.env`.
 
 ## Compliance
 

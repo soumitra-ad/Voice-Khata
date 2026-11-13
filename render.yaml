@@ -1,0 +1,32 @@
+# Render blueprint: https://render.com/docs/blueprint-spec
+# Deploy with: Render dashboard -> New -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: voice-khata
+    runtime: node
+    plan: free
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "24.22.0"
+      # Mock mode is the safe default: the whole loop runs with no Gnani credentials.
+      # Set this to "0" in the dashboard only after every GNANI_* value below is filled in.
+      - key: MOCK_VOICE
+        value: "1"
+      - key: TTS_SCRIPT
+        value: native
+      # Ephemeral on the free plan. Attach a disk (paid) and point this at it to keep the ledger.
+      - key: LEDGER_DB
+        value: /tmp/khata.db
+      # Required. 64 hex chars: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+      # Left blank, the server generates an in-memory key and transcripts become unreadable after a restart.
+      - key: TRANSCRIPT_KEY
+        sync: false
+      # Live voice only (MOCK_VOICE=0). Set every one of these in the dashboard from the Gnani docs;
+      # the adapter names and defaults are listed in .env.example.
+      # GNANI_API_KEY, GNANI_AUTH_HEADER, GNANI_AUTH_VALUE, GNANI_LANG_MAP,
+      # GNANI_STT_WS_URL, GNANI_STT_HEADERS, GNANI_STT_*_EVENT, GNANI_STT_*_FIELD,
+      # GNANI_TTS_WS_URL, GNANI_TTS_VOICE, GNANI_TTS_REQUEST_TEMPLATE, GNANI_TTS_*_EVENT

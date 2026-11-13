@@ -1,0 +1,11 @@
+node_modules
+.git
+.env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.wav
+*.m4a
+.DS_Store
+.freebuff

@@ -1,0 +1,35 @@
+# Fly.io: fly launch --dockerfile Dockerfile --no-deploy, then create the volume named below.
+app = "voice-khata"
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3000"
+  MOCK_VOICE = "1"
+  TTS_SCRIPT = "native"
+  LEDGER_DB = "/data/khata.db"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[mounts]]
+  source = "khata_data"
+  destination = "/data"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
