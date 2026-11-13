@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Khata</title>
+<style>
+  :root { --bg: #fbfaf7; --fg: #1d1d1b; --muted: #6b6a66; --line: #e4e1da; --accent: #b4441f; --ok: #2f7a3e; --card: #fff; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #ecebe7; --muted: #9a9892; --line: #2c2b29; --accent: #e0703f; --ok: #5fb06f; --card: #1f1f1d; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.45 system-ui, "Noto Sans Devanagari", "Noto Sans Bengali", sans-serif; background: var(--bg); color: var(--fg); }
+  main { max-width: 640px; margin: 0 auto; padding: 12px 16px 32px; }
+  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+  h1 { font-size: 20px; margin: 0; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+  #hud { font: 12px ui-monospace, monospace; color: var(--muted); }
+  select, button { font: inherit; color: inherit; }
+  select { padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+  #log { margin: 12px 0; min-height: 120px; max-height: 38vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; background: var(--card); }
+  .u { margin: 6px 0; font-size: 18px; }
+  .a { margin: 6px 0; color: var(--muted); }
+  #partial { color: var(--muted); font-style: italic; min-height: 1.4em; font-size: 18px; }
+  #ptt { display: block; width: 100%; height: 132px; border: 0; border-radius: 20px; background: var(--accent); color: #fff; font-size: 22px; font-weight: 600;
+         touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  #ptt:active, #ptt.on { filter: brightness(1.15); transform: scale(0.99); }
+  #ptt:disabled { opacity: 0.5; }
+  #meter { height: 6px; margin-top: 8px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  #meter i { display: block; height: 100%; width: 0; background: var(--ok); transition: width 60ms linear; }
+  h2 { font-size: 15px; margin: 20px 0 6px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .adv { color: var(--ok); }
+  .small { font-size: 13px; color: var(--muted); }
+  #purge { margin-top: 24px; background: none; border: 1px solid var(--accent); color: var(--accent); border-radius: 10px; padding: 8px 12px; }
+  #start { position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg); z-index: 9; }
+  #start button { font-size: 22px; padding: 18px 28px; border-radius: 16px; border: 0; background: var(--accent); color: #fff; }
+  #note { color: var(--accent); font-size: 13px; min-height: 1em; }
+</style>
+</head>
+<body>
+<div id="start"><button id="go">शुरू करें / Start</button></div>
+<main>
+  <header>
+    <h1>Voice Khata</h1>
+    <div class="row">
+      <span id="state" class="pill">IDLE</span>
+      <select id="lang" aria-label="Language">
+        <option value="hi">हिन्दी</option><option value="mr">मराठी</option><option value="bn">বাংলা</option><option value="en">English</option>
+      </select>
+    </div>
+  </header>
+  <div class="row" style="justify-content:space-between;margin-top:6px">
+    <span id="hud">TTFB p50 – · p95 – · n 0</span><span id="mode" class="small"></span>
+  </div>
+  <div id="log" aria-live="polite"></div>
+  <div id="partial"></div>
+  <button id="ptt" disabled>दबाकर बोलें · Hold to talk</button>
+  <div id="meter"><i></i></div>
+  <div id="note"></div>
+  <h2>Khata <span id="total" class="small"></span></h2>
+  <ul id="customers"></ul>
+  <h2>Recent entries</h2>
+  <ul id="entries"></ul>
+  <h2>Promises</h2>
+  <ul id="promises"></ul>
+  <button id="purge">Delete all demo data</button>
+  <p class="small">AI assistant. Synthetic demo data only. Transcripts are encrypted at rest.</p>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
