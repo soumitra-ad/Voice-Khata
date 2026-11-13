@@ -1,6 +1,7 @@
 'use strict';
 // Local-only SQLite ledger. Money is INTEGER PAISE. credit = +receivable, payment = -receivable.
 // Corrections soft-delete (undone=1) and re-insert; amounts are never mutated in place.
+// Audit rows hold a transcriptId (see securestore.js), never plaintext transcripts.
 const { randomUUID } = require('node:crypto');
 const { toWords } = require('./numerals');
 const { render } = require('./langpacks');
@@ -31,6 +32,16 @@ CREATE TABLE IF NOT EXISTS entries (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_entries_live ON entries(customer_id, entry_date) WHERE undone = 0;
+-- Promises to pay ("kal 200 dega"). Not entries: never part of the balances view.
+CREATE TABLE IF NOT EXISTS promises (
+  id INTEGER PRIMARY KEY,
+  customer_id INTEGER NOT NULL REFERENCES customers(id),
+  amount_paise INTEGER NOT NULL CHECK (typeof(amount_paise) = 'integer' AND amount_paise > 0),
+  due_on TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','fulfilled','cancelled')),
+  entry_id INTEGER REFERENCES entries(id)
+);
 CREATE TABLE IF NOT EXISTS audit (
   id INTEGER PRIMARY KEY,
   ts TEXT NOT NULL DEFAULT (datetime('now')),
@@ -73,6 +84,10 @@ class Ledger {
       balance: p('SELECT balance_paise FROM balances WHERE customer_id = ?'),
       dayTotal: p('SELECT COALESCE(SUM(amount_paise), 0) AS t FROM entries WHERE undone = 0 AND entry_date = ? AND direction = ?'),
       receivable: p('SELECT COALESCE(SUM(balance_paise), 0) AS t FROM balances WHERE balance_paise > 0'),
+      addPromise: p('INSERT INTO promises (customer_id, amount_paise, due_on) VALUES (?, ?, ?)'),
+      openPromises: p("SELECT id, customer_id, amount_paise, due_on FROM promises WHERE status = 'open' AND customer_id = ? ORDER BY id"),
+      promise: p("SELECT * FROM promises WHERE id = ? AND status = 'open'"),
+      fulfil: p("UPDATE promises SET status = 'fulfilled', entry_id = ? WHERE id = ?"),
       top: p('SELECT customer_id, name, balance_paise FROM balances WHERE balance_paise > 0 ORDER BY balance_paise DESC LIMIT ?'),
     };
   }
@@ -102,7 +117,7 @@ class Ledger {
     const batch = randomUUID();
     return this.tx(() => list.map((e) => {
       const id = Number(this.q.insert.run(e.customerId, e.direction, e.paise, e.date, batch, null).lastInsertRowid);
-      this.audit('add', id, { ...e, transcript: meta.transcript });
+      this.audit('add', id, { ...e, transcriptId: meta.transcriptId });
       return id;
     }));
   }
@@ -119,7 +134,7 @@ class Ledger {
       validate(e);
       this.q.undo.run(entryId);
       const id = Number(this.q.insert.run(e.customerId, e.direction, e.paise, e.date, old.batch_id, entryId).lastInsertRowid);
-      this.audit('correct', id, { replaces: entryId, patch, transcript: meta.transcript });
+      this.audit('correct', id, { replaces: entryId, patch, transcriptId: meta.transcriptId });
       return id;
     });
   }
@@ -127,8 +142,35 @@ class Ledger {
   undoEntry(entryId, meta = {}) {
     return this.tx(() => {
       const changed = Number(this.q.undo.run(entryId).changes) > 0;
-      if (changed) this.audit('undo', entryId, { transcript: meta.transcript });
+      if (changed) this.audit('undo', entryId, { transcriptId: meta.transcriptId });
       return changed;
+    });
+  }
+
+  // A promise is a note only: the balance does not move until fulfilPromise().
+  addPromise({ customerId, paise, dueOn = null }, meta = {}) {
+    if (!Number.isInteger(customerId)) throw new Error('customerId must be an integer');
+    if (!Number.isInteger(paise) || paise <= 0) throw new Error(`paise must be a positive integer, got ${paise}`);
+    const id = Number(this.q.addPromise.run(customerId, paise, dueOn).lastInsertRowid);
+    this.audit('promise', null, { promiseId: id, customerId, paise, dueOn, transcriptId: meta.transcriptId });
+    return id;
+  }
+
+  openPromises(customerId) {
+    return this.q.openPromises.all(customerId).map((r) => ({ id: r.id, customerId: r.customer_id, paise: Number(r.amount_paise), dueOn: r.due_on }));
+  }
+
+  // "aa gaya": turn an open promise into a real payment entry, atomically. Returns the entry id.
+  fulfilPromise(promiseId, { date, paise } = {}, meta = {}) {
+    return this.tx(() => {
+      const pr = this.q.promise.get(promiseId);
+      if (!pr) throw new Error(`promise ${promiseId} not found or not open`);
+      const e = { customerId: pr.customer_id, direction: 'payment', paise: paise ?? Number(pr.amount_paise), date };
+      validate(e);
+      const id = Number(this.q.insert.run(e.customerId, e.direction, e.paise, e.date, randomUUID(), null).lastInsertRowid);
+      this.q.fulfil.run(id, promiseId);
+      this.audit('fulfil_promise', id, { promiseId, transcriptId: meta.transcriptId });
+      return id;
     });
   }
 
@@ -153,7 +195,10 @@ class Ledger {
     return this.balancePaise(customerId) + pending.filter((e) => e.customerId === customerId).reduce((s, e) => s + signed(e), 0);
   }
 
-  purge() { this.tx(() => this.db.exec('DELETE FROM audit; DELETE FROM entries; DELETE FROM customers;')); }
+  purge() {
+    this.tx(() => this.db.exec('DELETE FROM audit; DELETE FROM promises; DELETE FROM entries; DELETE FROM customers;'));
+    this.db.exec('VACUUM'); // drop deleted rows from the file pages too
+  }
   close() { this.db.close(); }
 }
 
@@ -165,4 +210,4 @@ function speakBalance(paise, lang = 'hi', name = '') {
 
 const openLedger = (file) => new Ledger(file);
 
-module.exports = { openLedger, Ledger, speakBalance };
+module.exports = { openLedger, openDb, Ledger, speakBalance };

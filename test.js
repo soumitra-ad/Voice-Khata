@@ -5,6 +5,10 @@ const { normaliseAmount, toWords } = require('./core/numerals');
 const { openLedger, speakBalance } = require('./core/ledger');
 const { parse } = require('./core/parser');
 const G = require('./core/guardrails');
+const { SecureStore, encrypt, decrypt, loadKey, purge } = require('./core/securestore');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { UNION, PACKS } = require('./core/langpacks');
 
 const TODAY = '2026-11-13', YESTERDAY = '2026-11-12', TOMORROW = '2026-11-14';
@@ -52,7 +56,7 @@ test('ledger: atomic add, correction, undo, day total', () => {
   L.addEntries([
     { customerId: ramesh, direction: 'credit', paise: 34000, date: TODAY },
     { customerId: ramesh, direction: 'payment', paise: 20000, date: YESTERDAY },
-  ], { transcript: 'Ramesh ka 340 udhaar, kal 200 diya tha' });
+  ], { transcriptId: 1 });
   assert.equal(L.balancePaise(ramesh), 14000);
 
   const creditId = L.db.prepare("SELECT id FROM entries WHERE direction='credit'").get().id;
@@ -138,8 +142,8 @@ test('parser: correction patches amount on lastIntent', () => {
 
 test('parser: kal by tense, Marathi kal, queries, disambiguation, misc intents', () => {
   const fut = parse('Ramesh kal 200 de dega', { today: TODAY });
-  assert.equal(fut.entries[0].date, TOMORROW);
-  assert.equal(fut.entries[0].future, true);
+  assert.equal(fut.intent, 'promise_note');
+  assert.equal(fut.promise.due_on, TOMORROW);
   assert.equal(parse('Rameshne kal 200 dile', { today: TODAY, lang: 'mr', customers: [{ id: 1, name: 'Ramesh' }] }).entries[0].date, YESTERDAY);
 
   const q = parse('Ramesh ka total?', { today: TODAY });
@@ -195,4 +199,148 @@ test('langpacks: union lexicon and experimental packs', () => {
   assert.ok(UNION.agent.has('ne') && UNION.recipient.has('ko') && UNION.possessive.has('ka'));
   assert.ok(UNION.give_verbs.has('dihlas') && UNION.give_verbs.has('diyeche'));
   assert.ok(PACKS.bho.experimental && PACKS.mai.experimental);
+});
+
+test('numerals: native script, mixed script, fuzzy, digit preference', () => {
+  const cases = [['तीन सौ चालीस', 340], ['सवा सौ', 125], ['ढाई सौ', 250], ['दो हज़ार पाँच सौ', 2500], ['तीन sau chaalis', 340],
+    ['३४०', 340], ['पौने तीन सौ', 275], ['डेढ़ सौ', 150], ['दो हजार पांच सौ', 2500], ['तीन\u200B सौ चालीस', 340]];
+  for (const [t, v] of cases) assert.equal(normaliseAmount(t, 'hi').value, v, t);
+  assert.equal(normaliseAmount('তিন শো চল্লিশ', 'bn').value, 340);
+  assert.equal(normaliseAmount('তিনশো', 'bn').value, 300);
+  assert.equal(normaliseAmount('ঢাই কেজি', 'bn').kind, null); // not a Bengali idiom: nothing invented
+  assert.equal(normaliseAmount('ढाई किलो', 'hi').kind, 'quantity');
+  // Fuzzy ASR spellings, numeral lexicon only.
+  assert.equal(normaliseAmount('teen sau chalees', 'hi').value, 340);
+  assert.equal(normaliseAmount('teen sau chaalis', 'hi').value, 340);
+  assert.equal(normaliseAmount('Ramesh ka total kya hai', 'hi').value, null); // "hai" never becomes "dhai"
+  // Digit run beats a word parse.
+  assert.equal(normaliseAmount('teen sau chaalis, 350', 'hi').value, 350);
+});
+
+test('parser: native-script amount and fuzzy never eats a known customer name', () => {
+  const r = parse('Ramesh ka तीन सौ चालीस udhaar', { today: TODAY });
+  assert.equal(r.entries[0].paise, 34000);
+  // "Chalis" is a near-numeral; as a known customer it must stay a name.
+  const c = parse('Chalis ka 200 udhaar', { today: TODAY, customers: [{ id: 7, name: 'Chalis' }] });
+  assert.equal(c.entries[0].customer.id, 7);
+  assert.equal(c.entries[0].paise, 20000);
+  const f = parse('Chaalisa teen sau udhaar', { today: TODAY, customers: [{ id: 8, name: 'Chaalisa' }] }); // fuzzy-near "chaalees"
+  assert.equal(f.entries[0].customer.id, 8);
+  assert.equal(f.entries[0].paise, 30000);
+});
+
+test('parser: correction targeting is deterministic, never by proximity', () => {
+  const lastIntent = parse('Ramesh ka 340 udhaar, kal 200 diya tha', { today: TODAY });
+  const a = parse('nahi, 430', { today: TODAY, lastIntent });
+  assert.equal(a.entryIndex, 0);
+  assert.equal(a.patched.entries[0].paise, 43000);
+
+  const b = parse('nahi, 210', { today: TODAY, lastIntent });
+  assert.equal(b.intent, 'correct_slot');
+  assert.equal(b.entryIndex, 0, 'primary clause, NOT the 200 entry by proximity');
+  assert.equal(b.patched.entries[1].paise, 20000);
+
+  const c = parse('kal wala nahi, 250', { today: TODAY, lastIntent });
+  assert.equal(c.intent, 'correct_slot');
+  assert.equal(c.entryIndex, 1);
+  assert.equal(c.patched.entries[1].paise, 25000);
+  assert.equal(c.patched.entries[0].paise, 34000);
+
+  assert.equal(parse('nahi, doosra 250', { today: TODAY, lastIntent }).entryIndex, 1);
+  assert.equal(parse('nahi, udhaar wala 500', { today: TODAY, lastIntent }).entryIndex, 0);
+  assert.equal(parse('nahi, 200 wala 250', { today: TODAY, lastIntent }).entryIndex, 1);
+  assert.equal(parse('nahi, jama 250', { today: TODAY, lastIntent }).entryIndex, 1);
+
+  // No primary (neither entry dated today) -> ask, naming both amounts.
+  const old = parse('Ramesh ka kal 340 udhaar tha, parso 200 diya tha', { today: TODAY });
+  assert.equal(old.entries.length, 2);
+  const d = parse('nahi, 430', { today: TODAY, lastIntent: old });
+  assert.equal(d.intent, 'clarify');
+  assert.equal(d.slot, 'correction_target');
+  assert.equal(d.question, '340 wala ya 200 wala?');
+
+  const one = parse('Ramesh ko 200 diya', { today: TODAY });
+  assert.equal(parse('nahi, 250', { today: TODAY, lastIntent: one }).entryIndex, 0);
+});
+
+test('promises: future is a note, not a payment', () => {
+  for (const t of ['Ramesh kal 200 dega', 'Ramesh kal 200 de dunga', 'Ramesh ka 200 kal milega', 'Ramesh ka 200 kal aa jayega', 'Ramesh will pay 200 tomorrow']) {
+    const r = parse(t, { today: TODAY });
+    assert.equal(r.intent, 'promise_note', t);
+    assert.equal(r.promise.paise, 20000, t);
+    assert.equal(r.promise.due_on, TOMORROW, t);
+    assert.ok(!r.entries, t);
+  }
+  assert.equal(parse('Ramesh kal 200 dega', { today: TODAY }).reply, 'Theek, kal 200 milne ka note likh diya.');
+
+  // Past tense stays a normal entry.
+  const past = parse('Ramesh ne kal 200 diya tha', { today: TODAY });
+  assert.equal(past.intent, 'add_entries');
+  assert.equal(past.entries[0].direction, 'payment');
+  assert.equal(past.entries[0].date, YESTERDAY);
+
+  // Mixed: one real entry + one promise.
+  const mix = parse('Ramesh ka 340 udhaar, kal 200 dega', { today: TODAY });
+  assert.equal(mix.entries.length, 1);
+  assert.equal(mix.promises.length, 1);
+
+  // Conversion.
+  const note = parse('Ramesh kal 200 dega', { today: TODAY });
+  for (const t of ['aa gaya', 'abhi likh do']) {
+    const f = parse(t, { today: TODAY, lastIntent: note });
+    assert.equal(f.intent, 'promise_fulfil', t);
+    assert.deepEqual([f.entry.direction, f.entry.paise, f.entry.date], ['payment', 20000, TODAY]);
+  }
+  // Without an open promise, "200 aa gaya" is just a payment.
+  assert.equal(parse('Ramesh ka 200 aa gaya', { today: TODAY }).entries[0].direction, 'payment');
+});
+
+test('ledger: promises never touch the balance until fulfilled', () => {
+  const L = openLedger(':memory:');
+  const r = L.addCustomer('Ramesh');
+  L.addEntries([{ customerId: r, direction: 'credit', paise: 34000, date: TODAY }]);
+  const pid = L.addPromise({ customerId: r, paise: 20000, dueOn: TOMORROW });
+  assert.equal(L.balancePaise(r), 34000, 'promise leaves balance unchanged');
+  assert.equal(L.openPromises(r).length, 1);
+  L.fulfilPromise(pid, { date: TODAY });
+  assert.equal(L.balancePaise(r), 14000, 'conversion applies the payment');
+  assert.equal(L.openPromises(r).length, 0);
+  assert.throws(() => L.fulfilPromise(pid, { date: TODAY }), /not open/);
+  assert.equal(L.balancePaise(r), 14000);
+  L.close();
+});
+
+test('securestore: AES-256-GCM transcripts, no plaintext on disk, purge', () => {
+  const keyHex = 'ab'.repeat(32);
+  const key = loadKey(keyHex);
+  const e = encrypt('Ramesh ka 340 udhaar', key);
+  assert.equal(e.iv.length, 12);
+  assert.equal(e.authTag.length, 16);
+  assert.equal(decrypt(e, key), 'Ramesh ka 340 udhaar');
+  assert.throws(() => decrypt({ ...e, authTag: Buffer.alloc(16) }, key)); // tamper detected
+  assert.throws(() => decrypt(e, loadKey('cd'.repeat(32))));             // wrong key
+  assert.throws(() => loadKey('abc'), /64 hex/);
+  assert.throws(() => loadKey(undefined), /64 hex/);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'khata-'));
+  const file = path.join(dir, 'test.db');
+  const L = openLedger(file);
+  const S = new SecureStore(L.db, keyHex);
+  const secret = 'Suresh ka 777 udhaar unique-plaintext-marker';
+  const tid = S.put(secret);
+  const c = L.addCustomer('Suresh');
+  L.addEntries([{ customerId: c, direction: 'credit', paise: 77700, date: TODAY }], { transcriptId: tid });
+  assert.equal(S.get(tid), secret);
+  L.close();
+  const raw = fs.readFileSync(file);
+  assert.equal(raw.includes('unique-plaintext-marker'), false, 'plaintext must not be on disk');
+
+  const L2 = openLedger(file);
+  const S2 = new SecureStore(L2.db, keyHex);
+  assert.equal(S2.get(tid), secret);
+  purge(L2.db);
+  assert.equal(S2.count(), 0);
+  assert.equal(L2.balancePaise(c), 77700, 'transcript purge leaves the ledger alone');
+  L2.close();
+  fs.rmSync(dir, { recursive: true, force: true });
 });

@@ -1,9 +1,16 @@
 'use strict';
 // Pure, deterministic amount normaliser. No network, no LLM.
+const { UNION } = require('./langpacks');
 
 const words = (s) => s.trim().split(/\s+/);
 
-// Romanised 0-100 LOOKUP TABLES. Indic numerals are irregular: never generate them by rule.
+// Script normalisation applied to input AND to every lexicon key, so both sides match:
+// NFD -> drop nukta -> NFC, chandrabindu -> anusvara (पाँच = पांच), zero-width chars removed, danda -> comma.
+const normText = (s) => String(s || '').normalize('NFD').replace(/[़়]/g, '').normalize('NFC')
+  .replace(/[​-‍⁠﻿]/g, '').replace(/ँ/g, 'ं').replace(/[।॥]/g, ',');
+
+// 0-100 LOOKUP TABLES. Indic numerals are irregular: never generate them by rule.
+// Romanised tables are also used by toWords() for spoken output.
 const TABLES = {
   hi: words(`shunya ek do teen chaar paanch chhah saat aath nau das gyaarah baarah terah chaudah
     pandrah solah satrah athaarah unnees bees ikkees baaees teyees chaubees pachchees chhabbees
@@ -47,71 +54,115 @@ const TABLES = {
     return [...t, 'hundred'];
   })(),
 };
-for (const [l, t] of Object.entries(TABLES)) if (t.length !== 101) throw new Error(`numeral table ${l} has ${t.length} entries`);
 
-// Common spelling variants the fold below cannot reach.
+// Native-script tables (parse only).
+const NATIVE = {
+  hi: words(`शून्य एक दो तीन चार पाँच छह सात आठ नौ दस ग्यारह बारह तेरह चौदह पंद्रह सोलह सत्रह अठारह उन्नीस
+    बीस इक्कीस बाईस तेईस चौबीस पच्चीस छब्बीस सत्ताईस अट्ठाईस उनतीस तीस इकतीस बत्तीस तैंतीस चौंतीस
+    पैंतीस छत्तीस सैंतीस अड़तीस उनतालीस चालीस इकतालीस बयालीस तैंतालीस चौवालीस पैंतालीस छियालीस
+    सैंतालीस अड़तालीस उनचास पचास इक्यावन बावन तिरपन चौवन पचपन छप्पन सत्तावन अट्ठावन उनसठ साठ
+    इकसठ बासठ तिरसठ चौंसठ पैंसठ छियासठ सड़सठ अड़सठ उनहत्तर सत्तर इकहत्तर बहत्तर तिहत्तर चौहत्तर
+    पचहत्तर छिहत्तर सतहत्तर अठहत्तर उन्यासी अस्सी इक्यासी बयासी तिरासी चौरासी पचासी छियासी सत्तासी
+    अट्ठासी नवासी नब्बे इक्यानबे बानबे तिरानबे चौरानबे पचानबे छियानबे सत्तानबे अट्ठानबे निन्यानबे सौ`),
+  // TODO native-speaker verify (Bengali script)
+  bn: words(`শূন্য এক দুই তিন চার পাঁচ ছয় সাত আট নয় দশ এগারো বারো তেরো চোদ্দ পনেরো ষোলো সতেরো আঠারো উনিশ
+    কুড়ি একুশ বাইশ তেইশ চব্বিশ পঁচিশ ছাব্বিশ সাতাশ আঠাশ ঊনত্রিশ ত্রিশ একত্রিশ বত্রিশ তেত্রিশ চৌত্রিশ
+    পঁয়ত্রিশ ছত্রিশ সাঁইত্রিশ আটত্রিশ ঊনচল্লিশ চল্লিশ একচল্লিশ বিয়াল্লিশ তেতাল্লিশ চুয়াল্লিশ পঁয়তাল্লিশ
+    ছেচল্লিশ সাতচল্লিশ আটচল্লিশ ঊনপঞ্চাশ পঞ্চাশ একান্ন বাহান্ন তিপ্পান্ন চুয়ান্ন পঞ্চান্ন ছাপ্পান্ন সাতান্ন
+    আটান্ন ঊনষাট ষাট একষট্টি বাষট্টি তেষট্টি চৌষট্টি পঁয়ষট্টি ছেষট্টি সাতষট্টি আটষট্টি ঊনসত্তর সত্তর
+    একাত্তর বাহাত্তর তিয়াত্তর চুয়াত্তর পঁচাত্তর ছিয়াত্তর সাতাত্তর আটাত্তর ঊনআশি আশি একাশি বিরাশি তিরাশি
+    চুরাশি পঁচাশি ছিয়াশি সাতাশি অষ্টআশি ঊননব্বই নব্বই একানব্বই বিরানব্বই তিরানব্বই চুরানব্বই পঁচানব্বই
+    ছিয়ানব্বই সাতানব্বই আটানব্বই নিরানব্বই একশো`),
+};
+for (const [l, t] of [...Object.entries(TABLES), ...Object.entries(NATIVE)]) {
+  if (t.length !== 101) throw new Error(`numeral table ${l} has ${t.length} entries`);
+}
+
+// Spelling variants (exact keys).
 const VARIANTS = {
   hi: { char: 4, panch: 5, chhe: 6, che: 6, chah: 6, chhah: 6, gyarah: 11, barah: 12, unnis: 19, ikkis: 21, baais: 22, teis: 23,
     chaubis: 24, pachis: 25, pachchis: 25, chhabbis: 26, sattais: 27, atthais: 28, iktis: 31, saintis: 37, chalis: 40,
-    pachas: 50, sath: 60, assi: 80, nabbe: 90, ninyanve: 99 },
-  mr: { sadtis: 37, pach: 5, dahaa: 10, chalis: 40, pannas: 50 },
-  bn: { tinsho: 300 },
+    pachas: 50, sath: 60, ninyanve: 99, 'छः': 6, 'छे': 6, 'पांच': 5, 'उन्नासी': 79, 'निन्यानवे': 99 },
+  mr: { sadtis: 37, pach: 5, dahaa: 10, chalis: 40 },
+  bn: { 'বিশ': 20, 'ছয়': 6, 'ষোল': 16, 'চোদ্দো': 14, 'আটাশি': 88 },
   en: { fourty: 40 },
 };
 
-const SCALES = { sau: 100, sou: 100, saw: 100, sho: 100, she: 100, shambhar: 100, hundred: 100,
+const nmap = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [normText(k), v]));
+const SCALES = nmap({ sau: 100, sou: 100, saw: 100, sho: 100, she: 100, shambhar: 100, hundred: 100,
   hazaar: 1000, hazar: 1000, hajar: 1000, hajaar: 1000, thousand: 1000,
-  lakh: 1e5, lac: 1e5, lakhs: 1e5, laakh: 1e5, crore: 1e7, karod: 1e7, karor: 1e7, koti: 1e7 };
+  lakh: 1e5, lac: 1e5, lakhs: 1e5, laakh: 1e5, crore: 1e7, karod: 1e7, karor: 1e7, koti: 1e7,
+  'सौ': 100, 'शंभर': 100, 'हज़ार': 1000, 'हजार': 1000, 'लाख': 1e5, 'करोड़': 1e7,
+  'শো': 100, 'শ': 100, 'একশো': 100, 'একশ': 100, 'হাজার': 1000, 'লাখ': 1e5, 'কোটি': 1e7 });
 // Fraction idioms. MOD shifts the following number (sava teen = 3.25); NUM stands alone (dhai = 2.5).
-const IDIOM_MOD = { sava: 0.25, savaa: 0.25, sawa: 0.25, savva: 0.25, soya: 0.25, paune: -0.25, pone: -0.25, paun: -0.25,
-  sadhe: 0.5, saadhe: 0.5, sade: 0.5, saade: 0.5 };
-const IDIOM_NUM = { dedh: 1.5, derh: 1.5, dedha: 1.5, deedh: 1.5, dhai: 2.5, dhaai: 2.5, adhai: 2.5, arhai: 2.5, adich: 2.5,
-  arai: 2.5, adha: 0.5, aadha: 0.5, ardha: 0.5, half: 0.5 };
-const CURRENCY = new Set(words('₹ rs rupaye rupay rupaya rupiya rupiye rupee rupees rupe inr taka tk'));
-const UNITS = { kilo: 'kg', kg: 'kg', kilogram: 'kg', kilos: 'kg', gram: 'g', gm: 'g', grams: 'g', litre: 'l', liter: 'l',
+const IDIOM_MOD = nmap({ sava: 0.25, savaa: 0.25, sawa: 0.25, savva: 0.25, soya: 0.25, paune: -0.25, pone: -0.25, paun: -0.25,
+  sadhe: 0.5, saadhe: 0.5, sade: 0.5, saade: 0.5,
+  'सवा': 0.25, 'पौने': -0.25, 'साढ़े': 0.5, 'সোয়া': 0.25, 'পৌনে': -0.25, 'সাড়ে': 0.5 });
+const IDIOM_NUM = nmap({ dedh: 1.5, derh: 1.5, dedha: 1.5, deedh: 1.5, dhai: 2.5, dhaai: 2.5, adhai: 2.5, arhai: 2.5, adich: 2.5,
+  arai: 2.5, adha: 0.5, aadha: 0.5, ardha: 0.5, half: 0.5,
+  'डेढ़': 1.5, 'ढाई': 2.5, 'अढ़ाई': 2.5, 'आधा': 0.5, 'দেড়': 1.5, 'আড়াই': 2.5, 'আধা': 0.5 });
+const CURRENCY = new Set(words('₹ rs rupaye rupay rupaya rupiya rupiye rupee rupees rupe inr taka tk रुपये रुपए रुपया रुपैया रु টাকা').map(normText));
+const UNITS = nmap({ kilo: 'kg', kg: 'kg', kilogram: 'kg', kilos: 'kg', gram: 'g', gm: 'g', grams: 'g', litre: 'l', liter: 'l',
   ltr: 'l', litres: 'l', packet: 'packet', packets: 'packet', dozen: 'dozen', darjan: 'dozen', piece: 'piece', pieces: 'piece',
-  pcs: 'piece', meter: 'm', metre: 'm', quintal: 'quintal', bori: 'bag', bag: 'bag' };
-
-// Loose spelling fold: aa->a, ee->i, oo->u, collapse doubled letters. Used only after exact lookup fails.
-const fold = (w) => w.replace(/ee/g, 'i').replace(/oo/g, 'u').replace(/aa/g, 'a').replace(/(.)\1+/g, '$1');
+  pcs: 'piece', meter: 'm', metre: 'm', quintal: 'quintal', bori: 'bag', bag: 'bag',
+  'किलो': 'kg', 'ग्राम': 'g', 'लीटर': 'l', 'दर्जन': 'dozen', 'पैकेट': 'packet', 'কেজি': 'kg', 'কিলো': 'kg', 'গ্রাম': 'g', 'লিটার': 'l' });
 
 const LANGS = ['hi', 'mr', 'bn', 'en'];
-const EXACT = {}, FOLDED = {};
+const EXACT = {};
 for (const l of LANGS) {
   EXACT[l] = new Map();
-  TABLES[l].forEach((w, i) => { if (!SCALES[w]) EXACT[l].set(w, i); });
-  for (const [w, v] of Object.entries(VARIANTS[l])) EXACT[l].set(w, v);
-  FOLDED[l] = new Map();
-  const clash = new Set();
-  for (const [w, v] of EXACT[l]) {
-    const f = fold(w);
-    if (FOLDED[l].has(f) && FOLDED[l].get(f) !== v) clash.add(f);
-    FOLDED[l].set(f, v);
+  for (const t of [TABLES[l], NATIVE[l] || []]) t.forEach((w, i) => { const k = normText(w); if (!SCALES[k]) EXACT[l].set(k, i); });
+  for (const [w, v] of Object.entries(VARIANTS[l])) EXACT[l].set(normText(w), v);
+}
+const FUZZY_KEYS = [...new Map(LANGS.flatMap((l) => [...EXACT[l]])).entries()].map(([k, v]) => ({ k: [...k], v }));
+// Never fuzzy-match ordinary lexicon words into numbers ("hai" must not become "dhai").
+const NO_FUZZY = new Set([...UNION.all, ...CURRENCY, ...Object.keys(UNITS), ...Object.keys(SCALES), ...Object.keys(IDIOM_MOD), ...Object.keys(IDIOM_NUM)]);
+
+function editDistance(a, b, max) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      rowMin = Math.min(rowMin, cur[j]);
+    }
+    if (rowMin > max) return max + 1;
+    prev = cur;
   }
-  for (const f of clash) FOLDED[l].delete(f);
+  return prev[b.length];
 }
 
-function lookup(w, lang) {
-  const order = [lang, ...LANGS.filter((l) => l !== lang)].filter((l) => EXACT[l]);
-  for (const l of order) if (EXACT[l].has(w)) return { v: EXACT[l].get(w), fuzzy: false };
-  const f = fold(w);
-  for (const l of order) if (FOLDED[l].has(f)) return { v: FOLDED[l].get(f), fuzzy: true };
-  return null;
+// Fuzzy match WITHIN THE NUMERAL LEXICON ONLY: <=1 edit under 6 chars, <=2 otherwise.
+// shortcut: words under 4 chars are never fuzzed (too many collisions: ko/do, de/do); revisit with real ASR logs.
+function fuzzyNumber(w) {
+  const cps = [...w];
+  if (cps.length < 4 || NO_FUZZY.has(w)) return null;
+  const max = cps.length < 6 ? 1 : 2;
+  let best = max + 1, vals = new Set();
+  for (const { k, v } of FUZZY_KEYS) {
+    if (Math.abs(k.length - cps.length) > max) continue;
+    const d = editDistance(cps, k, max);
+    if (d < best) { best = d; vals = new Set([v]); } else if (d === best) vals.add(v);
+  }
+  return best <= max && vals.size === 1 ? { v: [...vals][0], fuzzy: true } : null; // tie between different values -> no match
 }
 
 // Number value of a single token (not a scale). Returns {v, digit, fuzzy, idiom} or null.
-function numberOf(w, lang) {
+function numberOf(w, lang, allowFuzzy) {
   if (/^\d+(\.\d+)?$/.test(w)) return { v: parseFloat(w), digit: true };
   if (SCALES[w]) return null;
   if (IDIOM_NUM[w] !== undefined) return { v: IDIOM_NUM[w], idiom: true };
-  return lookup(w, lang);
+  const order = [lang, ...LANGS.filter((l) => l !== lang)].filter((l) => EXACT[l]);
+  for (const l of order) if (EXACT[l].has(w)) return { v: EXACT[l].get(w) };
+  return allowFuzzy ? fuzzyNumber(w) : null;
 }
 
-// Bengali/Marathi glue hundreds onto the number: "tinsho", "panchshe".
+// Hundreds glued onto the number: "tinsho", "তিনশো", "panchshe".
 function splitHundreds(w, lang) {
-  for (const suf of ['sho', 'she', 'sau']) {
+  for (const suf of ['sho', 'she', 'sau', 'শো', 'শ', 'सौ']) {
     if (w.length > suf.length + 1 && w.endsWith(suf)) {
-      const n = numberOf(w.slice(0, -suf.length), lang);
+      const n = numberOf(w.slice(0, -suf.length), lang, false);
       if (n && !n.digit) return n;
     }
   }
@@ -123,15 +174,17 @@ const foldDigits = (s) => s.replace(/[०-९০-৯੦-੯૦-૯୦-୯௦-௯
   (c) => { const cp = c.codePointAt(0); return String(cp - ZEROS.find((z) => cp >= z && cp <= z + 9)); });
 
 function tokenize(text) {
-  const s = foldDigits(String(text || '')).toLowerCase().replace(/(\d),(?=\d)/g, '$1');
+  const s = normText(foldDigits(String(text || ''))).toLowerCase().replace(/(\d),(?=\d)/g, '$1');
   const out = [];
-  for (const m of s.matchAll(/\d+(?:\.\d+)?|[\p{L}\p{M}]+|[₹,?।|]/gu)) out.push({ t: m[0], s: m.index, e: m.index + m[0].length });
+  for (const m of s.matchAll(/\d+(?:\.\d+)?|[\p{L}\p{M}]+|[₹,?|]/gu)) out.push({ t: m[0], s: m.index, e: m.index + m[0].length });
   return out;
 }
 
 // Read one numeric run starting at token i. Returns null if token i does not start a number.
-function readRun(toks, i, lang) {
-  let j = i, total = 0, cur = 0, mod = null, any = false, lastScale = false, prevDigit = false, conf = 0.98, currency = false;
+// opts.exclude: tokens (known customer names) that must never be read as numbers.
+function readRun(toks, i, lang, opts = {}) {
+  let j = i, total = 0, cur = 0, mod = null, any = false, lastScale = false, prevDigit = false, conf = 0.98;
+  let currency = false, anchored = false, digit = false;
   if (CURRENCY.has(toks[j] && toks[j].t)) { currency = true; j++; }
   const addNum = (n) => {
     let v = n.v;
@@ -144,6 +197,8 @@ function readRun(toks, i, lang) {
     else if (words2 && cur >= 1 && cur < 100 && v >= 10 && v < 100) { cur = cur * 100 + v; conf = Math.min(conf, 0.75); } // three forty
     else return false;
     any = true; lastScale = false; prevDigit = !!n.digit;
+    if (!n.fuzzy) anchored = true;
+    if (n.digit) digit = true;
     return true;
   };
   const addScale = (s) => {
@@ -151,51 +206,61 @@ function readRun(toks, i, lang) {
     if (mod !== null) conf = Math.min(conf, 0.85);
     mod = null;
     if (s === 100) cur = base * 100; else { total += base * s; cur = 0; }
-    any = true; lastScale = true; prevDigit = false;
+    any = true; lastScale = true; prevDigit = false; anchored = true;
   };
   for (; j < toks.length; j++) {
     const w = toks[j].t;
-    const n = numberOf(w, lang);
+    if (opts.exclude && opts.exclude.has(w)) break; // known customer name: never a numeral, exact or fuzzy
+    const n = numberOf(w, lang, true);
     if (n) { if (!addNum(n)) break; continue; }
     if (SCALES[w]) { addScale(SCALES[w]); continue; }
     const h = splitHundreds(w, lang);
     if (h) { if (!addNum(h)) break; addScale(100); continue; }
     if (IDIOM_MOD[w] !== undefined && (!any || lastScale)) { mod = IDIOM_MOD[w]; continue; }
-    if (w === 'and' && any && toks[j + 1] && numberOf(toks[j + 1].t, lang)) continue;
+    if (w === 'and' && any && toks[j + 1] && numberOf(toks[j + 1].t, lang, false)) continue;
     break;
   }
   if (!any) return null;
   let unit = null;
   if (toks[j] && CURRENCY.has(toks[j].t)) { currency = true; j++; } else if (toks[j] && UNITS[toks[j].t]) { unit = UNITS[toks[j].t]; j++; }
+  // A run made only of fuzzy guesses, with no exact numeral, scale or currency word, is rejected.
+  if (!anchored && !currency) return null;
   // "do" is also the Hindi imperative "give": a bare, unanchored "do" is not trusted as an amount.
   if (j - i === 1 && toks[i].t === 'do') conf = 0.3;
   const value = total + cur;
   return { value, paise: Math.round(value * 100), confidence: conf, kind: unit ? 'quantity' : 'money', unit,
-    currency, span: [toks[i].s, toks[j - 1].e], start: i, end: j };
+    currency, digit, span: [toks[i].s, toks[j - 1].e], start: i, end: j };
 }
 
-function scanTokens(toks, lang = 'hi') {
+function scanTokens(toks, lang = 'hi', opts = {}) {
   const runs = [];
   for (let i = 0; i < toks.length;) {
-    const r = readRun(toks, i, lang);
+    const r = readRun(toks, i, lang, opts);
     if (r) { runs.push(r); i = r.end; } else i++;
   }
   return runs;
 }
 
+// Trusted money run; a digit run beats a word parse.
+function pickMoney(runs) {
+  const money = runs.filter((r) => r.kind === 'money' && r.confidence >= 0.5);
+  return money.find((r) => r.digit) || money[0];
+}
+
 const findAmounts = (text, lang = 'hi') => scanTokens(tokenize(text), lang);
 
-// First trusted money amount; else the first run of any kind (e.g. a quantity).
+// Best money amount; else the first run of any kind (e.g. a quantity).
 function normaliseAmount(text, lang = 'hi') {
   const runs = findAmounts(text, lang);
-  const r = runs.find((x) => x.kind === 'money' && x.confidence >= 0.5) || runs[0];
+  const r = pickMoney(runs) || runs[0];
   if (!r) return { value: null, paise: null, confidence: 0, kind: null, unit: null, span: null };
   const { value, paise, confidence, kind, unit, span } = r;
   return { value, paise, confidence, kind, unit, span };
 }
 
+// Exact-only: used by the parser to keep numeral words out of customer names.
 const isNumeralWord = (w) => !!(SCALES[w] || IDIOM_MOD[w] !== undefined || IDIOM_NUM[w] !== undefined || CURRENCY.has(w) ||
-  UNITS[w] || numberOf(w, 'hi') || w === 'and');
+  UNITS[w] || numberOf(w, 'hi', false) || w === 'and');
 
 // Spoken words for an amount in paise. Indian grouping (lakh/crore) in every language.
 const SPEAK = {
@@ -222,4 +287,4 @@ function toWords(paise, lang = 'hi') {
   return `${say(r)} ${sp.cur} ${sp.and} ${say(ps)} ${sp.paise}`;
 }
 
-module.exports = { normaliseAmount, findAmounts, scanTokens, tokenize, foldDigits, toWords, isNumeralWord, TABLES, SCALES };
+module.exports = { normaliseAmount, findAmounts, scanTokens, pickMoney, tokenize, normText, foldDigits, toWords, isNumeralWord, TABLES, SCALES };

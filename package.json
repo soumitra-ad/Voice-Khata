@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "test": "node --test test.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "purge": "node core/securestore.js"
   },
   "engines": {
     "node": ">=22.5"

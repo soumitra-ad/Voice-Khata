@@ -7,7 +7,7 @@ const PACKS = {
   hi: {
     name: 'Hindi',
     credit_verbs: w('udhaar udhar udhaari baaki baki likho likh likhna credit'),
-    payment_verbs: w('jama chukaya chukaye chukayi chuka lautaya lautaye wapas vapas bhara bhare bharpai mila mile payment'),
+    payment_verbs: w('jama chukaya chukaye chukayi chuka lautaya lautaye wapas vapas bhara bhare bharpai mila mile milega milegi milenge payment'),
     give_verbs: w('diya diye di de dega degi denge dunga dungi dena dedo'),
     take_verbs: w('liya liye li le lega legi lenge lunga'),
     yes: w('haan han haa ha hanji ji theek thik sahi accha achha bilkul ok okay'),
@@ -15,7 +15,10 @@ const PACKS = {
     possessive: w('ka ki ke'), agent: w('ne'), recipient: w('ko'), source: w('se'),
     dates: { today: w('aaj aj'), yesterday: [], tomorrow: [], kal: w('kal kl'), parso: w('parso parson') },
     past: w('tha thi the diya diye liya liye kiya kiye gaya gaye gayi chukaya lautaya bhara mila mile aaya aaye'),
-    future: w('dega degi denge dunga dungi lega legi lenge lunga karega karegi karunga aayega dene lene wala waala'),
+    future: w('dega degi denge dunga dungi lega legi lenge lunga karega karegi karunga aayega jayega jayegi milega milegi milenge dene lene'),
+    wala: w('wala wale waala wali'), first: w('pehla pahla pehle pehli pahli'), second: w('doosra dusra doosre dusre doosri dusri'),
+    third: w('teesra tisra teesri'),
+    when: ['aaj', 'kal', 'parso'],
     query: w('total kitna kitne kitni hisaab hisab balance batao bataiye bolo kya kul'),
     undo: w('undo cancel hatao hata mitao mita radd'),
     create: w('naya nayi new'),
@@ -43,6 +46,11 @@ const PACKS = {
       refused_diagnosis: 'Maaf kijiye, main bimari ya dawai ki salah nahi de sakta. Doctor se poochhiye.',
       reminder: 'Namaste {name}, aapke khaate mein {amount} baaki hai. Jab suvidha ho, chuka dijiye. Dhanyavaad.',
       reminder_no_optin: '{name} ne reminder ke liye haan nahi kaha hai, isliye reminder nahi bhejunga.',
+      promise_saved: 'Theek, {when} {amount} milne ka note likh diya.',
+      clarify_target: '{options}?',
+      target_option: '{amount} wala',
+      target_join: ' ya ',
+      clarify_future_credit: 'Udhaar abhi diya, ya baad mein denge?',
     },
   },
   mr: {
@@ -58,7 +66,9 @@ const PACKS = {
     // Marathi kal = yesterday only; udya = tomorrow.
     dates: { today: w('aaj'), yesterday: w('kal kaal'), tomorrow: w('udya udyaa'), kal: [], parso: w('parva') },
     past: w('hote hota hoti dile ghetle kele bharle'),
-    future: w('deil denar ghein karel'),
+    future: w('deil denar ghein karel milel'),
+    wala: w('vala vali vale wala'), first: w('pahila pahili'), second: w('dusra dusri'), third: w('tisra tisri'),
+    when: ['aaj', 'udya', 'parva'],
     query: w('kiti ekun hishob total balance sanga'),
     undo: w('radd kadha cancel undo'),
     create: w('nava navin navi'),
@@ -86,6 +96,10 @@ const PACKS = {
       refused_diagnosis: 'Maaf kara, mi aajar kiva aushadhacha salla deu shakat nahi. Doctor la vichara.',
       reminder: 'Namaskar {name}, tumchya khatyat {amount} baki aahe. Soyi asel tevha bharave. Dhanyavad.',
       reminder_no_optin: '{name} ni reminder sathi ho mhatle nahi, mhanun reminder pathavnar nahi.',
+      promise_saved: 'Theek, {when} {amount} milnyachi nond keli.',
+      target_option: '{amount} vala',
+      target_join: ' ki ',
+      clarify_future_credit: 'Udhari aata dili, ki nantar denar?',
     },
   },
   bn: {
@@ -100,7 +114,9 @@ const PACKS = {
     agent: [], recipient: [], recipient_suffix: w('ke'), source: w('theke'),
     dates: { today: w('aaj aj'), yesterday: w('gotokal gatakal'), tomorrow: w('agamikal'), kal: w('kal kaal'), parso: w('porshu parshu') },
     past: w('chilo diyechilo diyeche dilo nilo niyeche niyechilo korechilo'),
-    future: w('debe dibe dibo nebe korbe debo'),
+    future: w('debe dibe dibo nebe korbe debo pabo'),
+    first: w('prothom'), second: w('ditiyo'), third: w('tritiyo'),
+    when: ['aaj', 'kal', 'porshu'],
     query: w('koto hisab total balance bolo'),
     undo: w('batil mucho undo cancel'),
     create: w('notun'),
@@ -129,6 +145,10 @@ const PACKS = {
       refused_diagnosis: 'Dukkhito, ami oshukh ba oshudher poramorsho dite pari na. Doctor ke jiggesh korun.',
       reminder: 'Nomoskar {name}, apnar khatay {amount} baki ache. Subidha moto shodh korben. Dhonnobad.',
       reminder_no_optin: '{name} reminder er jonno raji hon ni, tai reminder pathabo na.',
+      promise_saved: 'Thik ache, {when} {amount} pawar kotha likhe rakhlam.',
+      target_option: '{amount} takar ta',
+      target_join: ' na ',
+      clarify_future_credit: 'Baki ekhon dilen, na pore deben?',
     },
   },
   en: {
@@ -144,6 +164,8 @@ const PACKS = {
     dates: { today: w('today'), yesterday: w('yesterday'), tomorrow: w('tomorrow'), kal: [], parso: [] },
     past: w('was were gave took paid did had'),
     future: w('will shall gonna'),
+    first: w('first'), second: w('second'), third: w('third'),
+    when: ['today', 'tomorrow', 'the day after tomorrow'],
     query: w('total how much balance what'),
     undo: w('undo cancel delete remove scratch'),
     create: w('new add'),
@@ -172,6 +194,10 @@ const PACKS = {
       refused_diagnosis: 'Sorry, I cannot give medical advice. Please ask a doctor.',
       reminder: 'Hello {name}, your account shows {amount} due. Please settle when convenient. Thank you.',
       reminder_no_optin: '{name} has not agreed to reminders, so I will not send one.',
+      promise_saved: 'Okay, noted that {amount} is promised {when}.',
+      target_option: 'the {amount} one',
+      target_join: ' or ',
+      clarify_future_credit: 'Did you give the credit already, or will you give it later?',
     },
   },
   // EXPERIMENTAL: lexicon-only for parsing. No templates; replies fall back to Hindi.
@@ -194,13 +220,13 @@ const PACKS = {
     dates: { today: w('aai'), yesterday: [], tomorrow: [], kal: w('kaali kalh'), parso: w('parsu') },
     past: w('chhal delak lelak'), future: w('debai deta'),
     query: w('kataek hisab'), undo: [], create: [], customer_nouns: [], reminder: [], lending: w('karja byaj'),
-    diagnosis: [], conj: w('aa aar'), filler: w('achhi'),
+    diagnosis: [], conj: w('aar'), filler: w('achhi'),
   },
 };
 
 const LIST_FIELDS = ['credit_verbs', 'payment_verbs', 'give_verbs', 'take_verbs', 'yes', 'no', 'possessive', 'possessive_suffix',
   'agent', 'agent_suffix', 'recipient', 'recipient_suffix', 'source', 'prep_recipient', 'prep_source', 'past', 'future', 'query',
-  'undo', 'create', 'customer_nouns', 'reminder', 'lending', 'diagnosis', 'conj', 'filler'];
+  'undo', 'create', 'customer_nouns', 'reminder', 'lending', 'diagnosis', 'conj', 'filler', 'wala', 'first', 'second', 'third'];
 const DATE_KEYS = ['today', 'yesterday', 'tomorrow', 'kal', 'parso'];
 const SUFFIX_FIELDS = new Set(['possessive_suffix', 'agent_suffix', 'recipient_suffix']);
 
@@ -226,7 +252,8 @@ function detectLang(words) {
 function render(lang, key, vars = {}) {
   const t = (PACKS[lang] && PACKS[lang].templates && PACKS[lang].templates[key]) || PACKS.hi.templates[key];
   if (!t) throw new Error(`no template ${key}`);
-  return t.replace(/\{(\w+)\}/g, (_, k) => (vars[k] === undefined ? '' : String(vars[k])));
+  return t.replace(/\{(\w+)\}/g, (_, k) => (vars[k] === undefined ? '' : String(vars[k])))
+    .replace(/\s{2,}/g, ' ').replace(/\s+([.,?])/g, '$1').trim(); // empty vars leave no stray spaces
 }
 
 module.exports = { PACKS, UNION, detectLang, render };

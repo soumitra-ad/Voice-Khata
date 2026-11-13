@@ -1,18 +1,25 @@
 'use strict';
 // Deterministic utterance -> intent JSON. No LLM here; an LLM may only be a caller-side fallback.
-const { tokenize, scanTokens, isNumeralWord } = require('./numerals');
+const { tokenize, scanTokens, pickMoney, isNumeralWord, normText } = require('./numerals');
 const { PACKS, UNION: U, detectLang, render } = require('./langpacks');
 const G = require('./guardrails');
 
-const PUNCT = new Set([',', '?', '।', '|', '₹']);
-const SPLIT = new Set([',', '।', '|']);
+const PUNCT = new Set([',', '?', '|', '₹']);
+const SPLIT = new Set([',', '|']);
+const ORDINALS = ['first', 'second', 'third'];
 
 const addDays = (iso, n) => { const d = new Date(`${iso}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const dayDiff = (a, b) => Math.round((Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 864e5);
 const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
-const cap = (s) => s.replace(/\b\p{L}/gu, (c) => c.toUpperCase());
+const cap = (s) => s.replace(/(^|\s)(\p{L})/gu, (_, a, c) => a + c.toUpperCase());
 const isFuture = (w) => U.future.has(w) || /(unga|ungi|enge|ega|egi)$/.test(w);
+const rupees = (paise) => String(paise / 100);
+const joined = (words) => ` ${words.join(' ')} `;
+const RECEIVED = / (aa|mil) (gaya|gaye|gayi) | aale | peyechi | peyeche /;
+const FULFIL = / (aa|mil) (gaya|gaye|gayi) | abhi likh do | aale | peyechi | peyeche | received /;
+const WILL_ARRIVE = / aa (jayega|jayegi|jayenge) /;
 
-// Date offset for a clause. "kal"/"parso" are bidirectional in Hindi/Bengali: resolve by tense.
+// Date for a clause. "kal"/"parso" are bidirectional in Hindi/Bengali: resolve by tense.
 function clauseDate(words, lang, today) {
   const P = PACKS[lang] || PACKS.hi;
   const past = words.some((w) => U.past.has(w));
@@ -31,6 +38,7 @@ function clauseDate(words, lang, today) {
 }
 
 const aliasList = (c) => [c.name, ...(Array.isArray(c.aliases) ? c.aliases : String(c.aliases || '').split(','))].filter(Boolean);
+const nameTokens = (s) => normText(s).toLowerCase().split(/\s+/).filter(Boolean);
 const SUFFIX = [['agent', U.agent_suffix], ['recipient', U.recipient_suffix], ['possessive', U.possessive_suffix]];
 
 // Who is this clause about? Known customers first (alias + attached case suffix aware), else first unknown-word run.
@@ -41,9 +49,8 @@ function findCustomer(toks, used, customers) {
     for (const c of customers) {
       let score = 0, at = null;
       for (const key of aliasList(c)) {
-        const kt = key.toLowerCase().split(/\s+/);
         let s = 0, first = null;
-        for (const k of kt) {
+        for (const k of nameTokens(key)) {
           for (let i = 0; i < words.length; i++) {
             if (used.has(i)) continue;
             const w = words[i];
@@ -67,7 +74,7 @@ function findCustomer(toks, used, customers) {
     if (hits.length) return { id: hits[0].c.id, name: hits[0].c.name, ...hits[0].at };
   }
   for (let i = 0; i < words.length; i++) {
-    const unknown = (k) => k < words.length && !used.has(k) && /^\p{L}+$/u.test(words[k]) && !U.all.has(words[k]) && !isNumeralWord(words[k]);
+    const unknown = (k) => k < words.length && !used.has(k) && /^[\p{L}\p{M}]+$/u.test(words[k]) && !U.all.has(words[k]) && !isNumeralWord(words[k]);
     if (!unknown(i)) continue;
     let j = i;
     while (unknown(j)) j++;
@@ -90,7 +97,8 @@ function markerOf(words, who) {
 // Direction by verb class + case marker. Returns {direction, conf} with direction null when we must ASK.
 function directionOf(words, who, inherited, lang) {
   const has = (set) => words.some((w) => set.has(w));
-  if (has(U.payment_verbs)) return { direction: 'payment', conf: 1 };
+  const s = joined(words);
+  if (has(U.payment_verbs) || RECEIVED.test(s) || WILL_ARRIVE.test(s)) return { direction: 'payment', conf: 1 };
   if (has(U.credit_verbs)) return { direction: 'credit', conf: 1 };
   const give = words.findIndex((w) => U.give_verbs.has(w));
   const take = words.findIndex((w) => U.take_verbs.has(w));
@@ -118,17 +126,22 @@ function splitClauses(toks) {
 }
 
 const usedSet = (runs) => { const s = new Set(); for (const r of runs) for (let k = r.start; k < r.end; k++) s.add(k); return s; };
-const moneyRun = (runs) => runs.find((r) => r.kind === 'money' && r.confidence >= 0.5);
 const disambiguate = (base, who, lang, extra = {}) => ({ ...base, intent: 'disambiguate', slot: 'customer', candidates: who.candidates,
   question: render(lang, 'disambiguate', { name: who.name, options: who.candidates.map((c) => c.name).join(' / ') }), ...extra });
 
-function parseEntries(toks, base, lang, ctx, today) {
-  const entries = [];
+function whenWord(due, today, lang) {
+  if (!due) return '';
+  const when = (PACKS[lang] && PACKS[lang].when) || PACKS.hi.when;
+  return when[dayDiff(due, today)] || due;
+}
+
+function parseEntries(toks, base, lang, ctx, today, opts) {
+  const entries = [], promises = [];
   let topic = ctx.lastCustomer || null; // {id, name}
   for (const clause of splitClauses(toks)) {
     const words = clause.map((x) => x.t);
-    const runs = scanTokens(clause, lang);
-    const money = moneyRun(runs);
+    const runs = scanTokens(clause, lang, opts);
+    const money = pickMoney(runs);
     const who = findCustomer(clause, usedSet(runs), ctx.customers);
     if (who && who.ambiguous) return disambiguate(base, who, lang, { entries });
     const inherited = !who;
@@ -143,36 +156,82 @@ function parseEntries(toks, base, lang, ctx, today) {
       return { ...base, intent: 'clarify', slot: 'direction', entries, pending: { customer: topic, paise: money.paise },
         question: render(lang, 'clarify_direction', { name: topic.name }) };
     }
-    const d = clauseDate(words, lang, today) || { date: today, conf: 1 };
-    entries.push({ customer: topic, direction: dir.direction, paise: money.paise, date: d.date,
-      confidence: Math.min(money.confidence, dir.conf, d.conf), ...(d.future ? { future: true } : {}) });
+    const d = clauseDate(words, lang, today);
+    const future = !words.some((w) => U.past.has(w)) && ((d && d.future) || words.some(isFuture));
+    if (future) {
+      // Not yet happened: a promise to pay is a note, never a ledger entry. Future credit is not recorded either.
+      if (dir.direction !== 'payment') return { ...base, intent: 'clarify', slot: 'tense', entries, question: render(lang, 'clarify_future_credit') };
+      promises.push({ customer: topic, paise: money.paise, due_on: d ? d.date : null });
+      continue;
+    }
+    const date = d || { date: today, conf: 1 };
+    entries.push({ customer: topic, direction: dir.direction, paise: money.paise, date: date.date,
+      confidence: Math.min(money.confidence, dir.conf, date.conf) });
   }
-  if (!entries.length) return { ...base, intent: 'clarify', slot: 'utterance', question: render(lang, 'clarify_repeat') };
-  return { ...base, intent: 'add_entries', entries };
+  if (entries.length) return { ...base, intent: 'add_entries', entries, ...(promises.length ? { promises } : {}) };
+  if (promises.length) {
+    const p = promises[0];
+    return { ...base, intent: 'promise_note', promise: p, promises,
+      reply: render(lang, 'promise_saved', { when: whenWord(p.due_on, today, lang), amount: rupees(p.paise) }) };
+  }
+  return { ...base, intent: 'clarify', slot: 'utterance', question: render(lang, 'clarify_repeat') };
 }
 
-// "nahi, 430" etc. Patches one slot of ctx.lastIntent and returns the patched intent for read-back.
-function parseCorrection(rest, base, lang, ctx, today) {
-  const last = ctx.lastIntent;
-  const patched = JSON.parse(JSON.stringify(last));
-  const ents = patched.entries;
-  const words = rest.map((x) => x.t).filter((w) => !PUNCT.has(w));
-  const runs = scanTokens(rest, lang);
-  const money = moneyRun(runs);
-  const out = (slot, value, entryIndex) => ({ ...base, intent: 'correct_slot', slot, value, entryIndex, patched });
-  if (money) {
-    // shortcut: with several entries, patch the one whose amount is closest (430 vs 340 = misheard); ask if this misfires in demos.
-    let i = 0;
-    ents.forEach((e, k) => { if (Math.abs(e.paise - money.paise) < Math.abs(ents[i].paise - money.paise)) i = k; });
-    ents[i].paise = money.paise;
-    return out('amount', money.paise, i);
+// Which entry does a correction target? Deterministic order (never numeric proximity):
+//   a. explicit selector: ordinal ("pehla"/"doosra") or "<amount|date|udhaar|jama> wala"
+//   b. exactly one entry   c. the primary clause (first entry, dated today)   d. else ask.
+function pickTarget(rest, ents, lang, today, opts) {
+  const words = rest.map((x) => x.t);
+  const used = new Set();
+  const ord = ORDINALS.findIndex((f) => words.some((w) => U[f].has(w)));
+  if (ord >= 0) {
+    words.forEach((w, i) => { if (ORDINALS.some((f) => U[f].has(w))) used.add(i); });
+    return { cand: ents[ord] ? [ord] : [], used };
   }
-  const i = ents.length - 1;
-  if (words.some((w) => U.payment_verbs.has(w))) { ents[i].direction = 'payment'; return out('direction', 'payment', i); }
-  if (words.some((w) => U.credit_verbs.has(w))) { ents[i].direction = 'credit'; return out('direction', 'credit', i); }
-  const d = clauseDate(words, lang, today);
-  if (d) { ents[i].date = d.date; return out('date', d.date, i); }
-  const who = findCustomer(rest, usedSet(runs), ctx.customers);
+  const wi = words.findIndex((w) => U.wala.has(w));
+  if (wi > 0) {
+    for (let k = 0; k <= wi; k++) used.add(k);
+    const phrase = rest.slice(0, wi), pw = phrase.map((x) => x.t);
+    const amt = pickMoney(scanTokens(phrase, lang, opts));
+    const d = clauseDate(pw, lang, today);
+    const dir = pw.some((w) => U.payment_verbs.has(w)) ? 'payment' : pw.some((w) => U.credit_verbs.has(w)) ? 'credit' : null;
+    if (!amt && !d && !dir) return { cand: [], used };
+    const cand = ents.map((_, i) => i).filter((i) => (!amt || ents[i].paise === amt.paise) && (!d || ents[i].date === d.date) && (!dir || ents[i].direction === dir));
+    return { cand, used };
+  }
+  return { cand: null, used };
+}
+
+// "nahi, 430" / "kal wala nahi, 250". Patches one slot of ctx.lastIntent and returns the patched intent for read-back.
+function parseCorrection(rest, base, lang, ctx, today, opts) {
+  const patched = JSON.parse(JSON.stringify(ctx.lastIntent));
+  const ents = patched.entries;
+  const askTarget = () => ({ ...base, intent: 'clarify', slot: 'correction_target', entries: ents,
+    question: render(lang, 'clarify_target', { options: ents.map((e) => render(lang, 'target_option', { amount: rupees(e.paise) })).join(` ${render(lang, 'target_join')} `) }) });
+  let { cand, used } = pickTarget(rest, ents, lang, today, opts);
+  const value = rest.filter((_, i) => !used.has(i));
+  const vwords = value.map((x) => x.t);
+  const money = pickMoney(scanTokens(value, lang, opts));
+  const dirWord = vwords.some((w) => U.payment_verbs.has(w)) ? 'payment' : vwords.some((w) => U.credit_verbs.has(w)) ? 'credit' : null;
+  let target;
+  if (cand && cand.length === 1) target = cand[0];
+  else if (cand && !cand.length) return askTarget();
+  // A named slot next to a new amount selects by direction: "nahi, udhaar 430".
+  if (target === undefined && money && dirWord) {
+    const byDir = ents.map((_, i) => i).filter((i) => ents[i].direction === dirWord);
+    if (byDir.length === 1) target = byDir[0];
+  }
+  if (target === undefined) {
+    if (ents.length === 1) target = 0;
+    else if (ents[0].date === today) target = 0;
+    else return askTarget();
+  }
+  const out = (slot, v, entryIndex) => ({ ...base, intent: 'correct_slot', slot, value: v, entryIndex, patched });
+  if (money) { ents[target].paise = money.paise; return out('amount', money.paise, target); }
+  if (dirWord) { ents[target].direction = dirWord; return out('direction', dirWord, target); }
+  const d = clauseDate(vwords, lang, today);
+  if (d) { ents[target].date = d.date; return out('date', d.date, target); }
+  const who = findCustomer(value, new Set(), ctx.customers);
   if (who && who.ambiguous) return disambiguate(base, who, lang);
   if (who) { const c = { id: who.id, name: who.name }; ents.forEach((e) => { e.customer = c; }); return out('customer', c, null); }
   return { ...base, intent: 'deny' };
@@ -180,7 +239,8 @@ function parseCorrection(rest, base, lang, ctx, today) {
 
 /**
  * parse(text, ctx) -> intent JSON.
- * ctx: { lang?, today?: 'YYYY-MM-DD', customers?: [{id,name,aliases}], lastIntent?, lastCustomer?: {id,name} }
+ * ctx: { lang?, today?: 'YYYY-MM-DD', customers?: [{id,name,aliases}], lastIntent?, lastCustomer?: {id,name},
+ *        openPromise?: {customer, paise, due_on, id?} }
  */
 function parse(text, ctx = {}) {
   const toks = tokenize(text);
@@ -189,22 +249,34 @@ function parse(text, ctx = {}) {
   const today = ctx.today || localToday();
   const base = { text, lang };
   const has = (set) => words.some((w) => set.has(w));
+  // Known customer names are never fuzzy-matched into numbers.
+  const opts = { exclude: new Set((ctx.customers || []).flatMap((c) => aliasList(c).flatMap(nameTokens))) };
 
   if (!words.length) return { ...base, intent: 'clarify', slot: 'utterance', question: render(lang, 'clarify_repeat') };
   if (has(U.lending)) return { ...base, intent: 'refuse', ...G.refuseLending(lang) };
   if (has(U.diagnosis)) return { ...base, intent: 'refuse', ...G.refuseDiagnosis(lang) };
   if (words.some((w) => U.yes.has(w)) && words.every((w) => U.yes.has(w) || U.filler.has(w))) return { ...base, intent: 'confirm' };
-  if (U.no.has(words[0])) {
-    const rest = toks.slice(toks.findIndex((x) => x.t === words[0]) + 1).filter((x) => !U.no.has(x.t));
-    if (rest.some((x) => !PUNCT.has(x.t)) && ctx.lastIntent && ctx.lastIntent.entries && ctx.lastIntent.entries.length) {
-      return parseCorrection(rest, base, lang, ctx, today);
-    }
+
+  // Correction: starts with a no-word, or a selector precedes it ("kal wala nahi, 250").
+  const noIdx = words.findIndex((w) => U.no.has(w));
+  const selectorFirst = noIdx > 0 && noIdx <= 3 && words.slice(0, noIdx).some((w) => U.wala.has(w) || ORDINALS.some((f) => U[f].has(w)));
+  if (noIdx === 0 || selectorFirst) {
+    const rest = toks.filter((x) => !PUNCT.has(x.t) && !U.no.has(x.t));
+    const last = ctx.lastIntent;
+    if (rest.length && last && last.entries && last.entries.length) return parseCorrection(rest, base, lang, ctx, today, opts);
     return { ...base, intent: 'deny' };
   }
 
-  const runs = scanTokens(toks, lang);
-  const money = moneyRun(runs);
-  const who = () => findCustomer(toks.filter((x) => !PUNCT.has(x.t)), usedSet([]), ctx.customers);
+  // "aa gaya" / "abhi likh do" right after a promise turns it into a real payment.
+  const promise = ctx.openPromise || (ctx.lastIntent && ctx.lastIntent.intent === 'promise_note' && ctx.lastIntent.promise);
+  if (promise && FULFIL.test(joined(words))) {
+    const m = pickMoney(scanTokens(toks, lang, opts));
+    return { ...base, intent: 'promise_fulfil', promise, entry: { customer: promise.customer, direction: 'payment',
+      paise: m ? m.paise : promise.paise, date: today, confidence: 1 } };
+  }
+
+  const money = pickMoney(scanTokens(toks, lang, opts));
+  const who = () => findCustomer(toks.filter((x) => !PUNCT.has(x.t)), new Set(), ctx.customers);
 
   if (has(U.undo) && !money) return { ...base, intent: 'undo', target: 'last' };
   if (has(U.create) && has(U.customer_nouns)) {
@@ -228,7 +300,7 @@ function parse(text, ctx = {}) {
     }
     return { ...base, intent: 'query_balance', customer: null }; // whole-shop receivable
   }
-  return parseEntries(toks, base, lang, ctx, today);
+  return parseEntries(toks, base, lang, ctx, today, opts);
 }
 
 module.exports = { parse };
