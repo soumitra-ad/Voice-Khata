@@ -1,0 +1,17 @@
+{
+  "name": "voice-khata",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Voice ledger for kirana shopkeepers (Gnani Voice Hackathon PS2)",
+  "main": "server.js",
+  "scripts": {
+    "test": "node --test test.js",
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^13.1.1"
+  }
+}
