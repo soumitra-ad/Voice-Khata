@@ -7,3 +7,6 @@ node_modules/
 *.wav
 *.m4a
 .DS_Store
+
+# Internal build notes — kept local only
+CLAUDE.md
