@@ -1,6 +1,6 @@
 'use strict';
 // Shared .env access for the Gnani adapters. Every URL, header and event name is read from .env.
-// TODO: VERIFY FROM GNANI DOCS — values documented in .env.example come from docs.gnani.ai (checked 2026-11-13);
+// TODO: VERIFY FROM GNANI DOCS — the defaults below come from docs.gnani.ai (checked 2026-11-13);
 // confirm them against the live API with `npm run probe`.
 
 const env = (k, d = '') => (process.env[k] === undefined || process.env[k] === '' ? d : process.env[k]);

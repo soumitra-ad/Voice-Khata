@@ -7,6 +7,7 @@ const { parse } = require('./core/parser');
 const G = require('./core/guardrails');
 const { SecureStore, encrypt, decrypt, loadKey, purge } = require('./core/securestore');
 const fs = require('node:fs');
+const { execSync } = require('node:child_process');
 const os = require('node:os');
 const path = require('node:path');
 const { UNION, PACKS } = require('./core/langpacks');
@@ -760,12 +761,14 @@ test('timbre adapter: hi-IN request, base64 audio, error ends the reply, barge-i
   await new Promise((r) => wss.close(r));
 });
 
-test('.env.example never contains real secrets (it is committed)', () => {
-  const ex = fs.readFileSync(path.join(__dirname, '.env.example'), 'utf8');
-  for (const k of ['GNANI_API_KEY', 'TRANSCRIPT_KEY']) {
-    const m = ex.match(new RegExp(`^${k}=([^#\\n]*)`, 'm'));
-    assert.ok(m, `${k} line present`);
-    assert.equal(m[1].trim(), '', `${k} must be empty in .env.example — put it in .env`);
+test('no env file, database or recording is ever tracked in git', () => {
+  // The API key lives only in a local .env. Assert that against the real index, not against a shipped template.
+  let tracked;
+  try { tracked = execSync('git ls-files', { cwd: __dirname, encoding: 'utf8' }).split('\n'); }
+  catch { return; } // not a git checkout: nothing to check
+  for (const f of tracked.filter(Boolean)) {
+    assert.ok(!/(^|\/)\.env(\.|$)/.test(f), `${f} must never be committed`);
+    assert.ok(!/\.(db|db-journal|db-wal|db-shm|wav|m4a)$/.test(f), `${f} must never be committed`);
   }
 });
 

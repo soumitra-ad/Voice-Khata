@@ -18,11 +18,16 @@ Requires Node 22.5 or newer.
 
 ```sh
 npm install
-cp .env.example .env
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # paste into TRANSCRIPT_KEY
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # paste into TRANSCRIPT_KEY in .env
 npm test
 npm start            # http://localhost:3000
 ```
+
+Create a local `.env` (never committed — no env file is tracked in this repo) when you have Gnani credentials. The
+server needs only `GNANI_API_KEY`, `GNANI_AUTH_HEADER`, `GNANI_AUTH_VALUE`, `GNANI_LANG_MAP`, `GNANI_STT_WS_URL`,
+`GNANI_STT_HEADERS`, `GNANI_STT_*_EVENT`, `GNANI_STT_*_FIELD`, `GNANI_TTS_WS_URL`, `GNANI_TTS_VOICE`,
+`GNANI_TTS_REQUEST_TEMPLATE`, `GNANI_TTS_*_EVENT`, plus `TRANSCRIPT_KEY` and `MOCK_VOICE`. Every one of them is read
+through `adapters/config.js`, which also lists the defaults; no URL or header is hard-coded anywhere else.
 
 `MOCK_VOICE=1` (the default) runs the whole loop offline: Prisma returns canned transcripts in order and Timbre
 returns a short beep. The synthetic demo roster (`data/demo-roster.json`) has two customers named रमेश (गली / स्टेशन),
@@ -40,8 +45,8 @@ Agent replies are spoken and shown in native script by default (`TTS_SCRIPT=nati
 
 ### Going live with Gnani
 
-1. Fill in every `GNANI_*` value in `.env` from the Gnani docs. Nothing is guessed in code; each read is marked
-   `// TODO: VERIFY FROM GNANI DOCS`.
+1. Fill in every `GNANI_*` value in your local `.env` from the Gnani docs. Nothing is guessed in code; each read is
+   marked `// TODO: VERIFY FROM GNANI DOCS`.
 2. Record a short WAV and run `npm run probe -- ./sample.wav --lang hi`. It prints every raw Prisma WebSocket event
    and reports whether the transcript uses digits, Devanagari, Bengali or Latin script.
 3. Set `MOCK_VOICE=0` and `npm start`.
