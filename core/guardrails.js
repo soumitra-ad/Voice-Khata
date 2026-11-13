@@ -2,7 +2,8 @@
 // Deterministic guardrails. Code, not prompt instructions. Each returns {ok, reason, safeReply}.
 const { render } = require('./langpacks');
 
-const aiDisclosure = (lang = 'hi') => ({ ok: true, reason: null, safeReply: render(lang, 'disclosure') });
+// script: 'latin' | 'native' for every safeReply.
+const aiDisclosure = (lang = 'hi', script = 'latin') => ({ ok: true, reason: null, safeReply: render(lang, 'disclosure', {}, script) });
 
 // Threat, shaming, pressure or lending language that must never reach a customer.
 const THREAT = [
@@ -13,20 +14,20 @@ const THREAT = [
   /\bor\s+else\b/, /\bthreat/, /\bshame/,
 ];
 
-function lintReminder(text, lang = 'hi', vars = {}) {
+function lintReminder(text, lang = 'hi', vars = {}, script = 'latin') {
   const s = String(text || '').toLowerCase();
   const hits = THREAT.filter((r) => r.test(s)).map((r) => r.source);
   if (!hits.length) return { ok: true, reason: null, safeReply: text };
-  return { ok: false, reason: `pressure_language:${hits.join(',')}`, safeReply: render(lang, 'reminder', vars) };
+  return { ok: false, reason: `pressure_language:${hits.join(',')}`, safeReply: render(lang, 'reminder', vars, script) };
 }
 
-function requireOptIn(customer, lang = 'hi') {
+function requireOptIn(customer, lang = 'hi', script = 'latin') {
   const ok = !!customer && (customer.reminder_opt_in === true || Number(customer.reminder_opt_in) === 1);
   return ok ? { ok, reason: null, safeReply: null }
-    : { ok, reason: 'no_opt_in', safeReply: render(lang, 'reminder_no_optin', { name: (customer && customer.name) || '' }) };
+    : { ok, reason: 'no_opt_in', safeReply: render(lang, 'reminder_no_optin', { name: (customer && customer.name) || '' }, script) };
 }
 
-const refuseLending = (lang = 'hi') => ({ ok: false, reason: 'lending', safeReply: render(lang, 'refused_lending') });
-const refuseDiagnosis = (lang = 'hi') => ({ ok: false, reason: 'diagnosis', safeReply: render(lang, 'refused_diagnosis') });
+const refuseLending = (lang = 'hi', script = 'latin') => ({ ok: false, reason: 'lending', safeReply: render(lang, 'refused_lending', {}, script) });
+const refuseDiagnosis = (lang = 'hi', script = 'latin') => ({ ok: false, reason: 'diagnosis', safeReply: render(lang, 'refused_diagnosis', {}, script) });
 
 module.exports = { aiDisclosure, lintReminder, requireOptIn, refuseLending, refuseDiagnosis };

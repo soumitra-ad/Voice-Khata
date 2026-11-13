@@ -318,8 +318,19 @@ const SPEAK = {
   bn: { scales: ['koti', 'lakh', 'hajar', 'sho'], cur: 'taka', paise: 'poysha', and: 'ar' },
   en: { scales: ['crore', 'lakh', 'thousand', 'hundred'], cur: 'rupees', paise: 'paise', and: 'and' },
 };
-function toWords(paise, lang = 'hi') {
-  const L = TABLES[lang] ? lang : 'hi', sp = SPEAK[L], table = TABLES[L];
+// Native script: the same NATIVE lookup tables, read in reverse (value -> word).
+const SPEAK_NATIVE = {
+  hi: { scales: ['करोड़', 'लाख', 'हज़ार', 'सौ'], cur: 'रुपये', paise: 'पैसे', and: 'और' },
+  // TODO native-speaker verify: spoken Marathi glues hundreds (तीनशे), we say तीन शंभर.
+  mr: { scales: ['कोटी', 'लाख', 'हजार', 'शंभर'], cur: 'रुपये', paise: 'पैसे', and: 'आणि' },
+  // TODO native-speaker verify: spoken Bengali glues hundreds (তিনশো), we say তিন শো.
+  bn: { scales: ['কোটি', 'লাখ', 'হাজার', 'শো'], cur: 'টাকা', paise: 'পয়সা', and: 'আর' },
+};
+// script: 'latin' (romanised) or 'native' (Devanagari / Bengali). English has no native form.
+function toWords(paise, lang = 'hi', script = 'latin') {
+  const L = TABLES[lang] ? lang : 'hi';
+  const nat = script === 'native' && NATIVE[L];
+  const sp = nat ? SPEAK_NATIVE[L] : SPEAK[L], table = nat ? NATIVE[L] : TABLES[L];
   const say = (n) => {
     if (n < 100) return table[n];
     const parts = [];

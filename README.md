@@ -26,7 +26,11 @@ npm start            # http://localhost:3000
 
 `MOCK_VOICE=1` (the default) runs the whole loop offline: Prisma returns canned transcripts in order
 (`रमेश का 340 उधार, कल 200 दिया था` → `नाही, 430` → `हाँ` → `रमेश का टोटल?`) and Timbre returns a short beep.
-Open the page, tap **Start**, then hold the button once per utterance.
+Open the page, tap **Start**, then hold the button once per utterance. The mic, worklet and frame upload run in mock mode
+too (level meter + frame counter); only the transcript is canned. The latency HUD reads "MOCK — not a real measurement".
+
+Agent replies are spoken and shown in native script by default (`TTS_SCRIPT=native`: Devanagari / Bengali); set
+`TTS_SCRIPT=latin` for romanised output. User transcripts are always shown exactly as recognised.
 
 ### Going live with Gnani
 

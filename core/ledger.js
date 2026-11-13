@@ -203,9 +203,9 @@ class Ledger {
 }
 
 // Negative balance = customer paid in advance. Never say "minus baaki".
-function speakBalance(paise, lang = 'hi', name = '') {
+function speakBalance(paise, lang = 'hi', name = '', script = 'latin') {
   const key = paise > 0 ? 'balance_due' : paise < 0 ? 'balance_advance' : 'balance_zero';
-  return render(lang, key, { name, amount: toWords(Math.abs(paise), lang) });
+  return render(lang, key, { name, amount: toWords(Math.abs(paise), lang, script) }, script);
 }
 
 const openLedger = (file) => new Ledger(file);

@@ -11,7 +11,8 @@ const { parse } = require('./core/parser');
 const { openLedger, speakBalance } = require('./core/ledger');
 const { SecureStore, purge: purgeTranscripts } = require('./core/securestore');
 const { aiDisclosure } = require('./core/guardrails');
-const { render } = require('./core/langpacks');
+const { render, dayWord } = require('./core/langpacks');
+const { answerPending, pendingFrom, questionFor } = require('./core/dialog');
 const { toWords, tokenize } = require('./core/numerals');
 const { canonicalKey } = require('./core/translit');
 const { createPrisma } = require('./adapters/prisma');
@@ -20,6 +21,8 @@ const { createTimbre } = require('./adapters/timbre');
 const PORT = Number(process.env.PORT || 3000);
 const MOCK = process.env.MOCK_VOICE !== '0';
 const LANGS = new Set(['hi', 'mr', 'bn', 'en']);
+// Script for spoken AND on-screen agent text. User transcripts are never converted.
+const SCRIPT = process.env.TTS_SCRIPT === 'latin' ? 'latin' : 'native';
 
 let key = process.env.TRANSCRIPT_KEY;
 if (!key) {
@@ -30,25 +33,22 @@ if (!key) {
 const ledger = openLedger(process.env.LEDGER_DB || './khata.db');
 const store = new SecureStore(ledger.db, key);
 
-// Replies the core templates do not cover. Romanised, like core templates.
-const REPLIES = {
-  hi: { confirm_q: 'Sahi hai?', cancelled: 'Theek hai, nahi likha.', nothing: 'Abhi kuch pending nahi hai.', yesterday: 'kal',
-    today: 'Aaj', total: 'Dukaan ka kul baaki {amount} hai.', day_total: '{when} udhaar {credit}, jama {payment}.',
-    undone: 'Pichhli entry hata di.', created: '{name} ka khata khul gaya.', optin: '{name} ke reminder ki anumati likh li.',
-    error: 'Maaf kijiye, phir se boliye.' },
-  mr: { confirm_q: 'Barobar?', cancelled: 'Theek aahe, lihile nahi.', nothing: 'Aata kahi baki nahi.', yesterday: 'kal', today: 'Aaj',
-    total: 'Dukanachi ekun baki {amount} aahe.', day_total: '{when} udhari {credit}, jama {payment}.', undone: 'Magchi nond kadhli.',
-    created: '{name} cha khata ughadla.', optin: '{name} chya reminder chi parvangi lihili.', error: 'Maaf kara, parat sanga.' },
-  bn: { confirm_q: 'Thik ache?', cancelled: 'Thik ache, likhlam na.', nothing: 'Ekhon kichu baki nei.', yesterday: 'gotokal', today: 'Aaj',
-    total: 'Dokaner mot baki {amount}.', day_total: '{when} baki {credit}, jama {payment}.', undone: 'Ager entry muchhe dilam.',
-    created: '{name} er khata khola holo.', optin: '{name} er reminder er onumoti likhlam.', error: 'Dukkhito, abar bolun.' },
-  en: { confirm_q: 'Correct?', cancelled: 'Okay, not saved.', nothing: 'Nothing pending.', yesterday: 'yesterday', today: 'Today',
-    total: 'Total due to the shop is {amount}.', day_total: '{when}: credit {credit}, payments {payment}.', undone: 'Removed the last entry.',
-    created: 'Opened an account for {name}.', optin: 'Noted that {name} agreed to reminders.', error: 'Sorry, please say that again.' },
-};
-const say = (lang, k, vars = {}) => (REPLIES[lang][k] || REPLIES.hi[k]).replace(/\{(\w+)\}/g, (_, x) => vars[x] ?? '');
+// Every user-facing string comes from core/langpacks.js in the configured script.
+const T = (s, key, vars) => render(s.lang, key, vars, SCRIPT);
+const W = (s, paise) => toWords(paise, s.lang, SCRIPT);
+const nativeAlias = (c) => c && (c.aliases || []).find((x) => /[^\x00-\x7F]/.test(x));
+// Name to speak/show: the original-script name in native mode when we have one.
+function nm(c) {
+  if (!c || SCRIPT !== 'native') return c ? c.name : '';
+  if (c.display) return c.display;
+  const row = c.id && ledger.findCustomers('').find((x) => x.id === c.id);
+  return nativeAlias(row) || c.name;
+}
+const nmById = (id) => nm(ledger.findCustomers('').find((c) => c.id === id));
+const balanceLine = (s, id, c) => speakBalance(ledger.balancePaise(id), s.lang, c ? nm(c) : nmById(id), SCRIPT);
 
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const dayDiff = (a, b) => Math.round((Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 864e5);
 const addDays = (iso, n) => { const d = new Date(`${iso}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const signed = (e) => (e.direction === 'credit' ? e.paise : -e.paise);
 const pct = (xs, p) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); return Math.round(s[Math.min(s.length - 1, Math.floor(p * s.length))]); };
@@ -86,7 +86,7 @@ function newSession(ws) {
     pendingEntries: [],    // read back, waiting for "haan"
     pendingPromises: [],
     lastCommit: null,      // { ids } of the last committed batch
-    clarify: null,         // { intent, text } of an open clarify question
+    pendingQuestion: null, // the agent's open question; a short answer ("gali wala", "pehla") completes it
     lastCustomer: null,
     openPromise: null,
     playQueue: [],         // agent utterances not yet spoken (barge-in clears it)
@@ -174,39 +174,27 @@ function onFinal(s, text) {
   s.lastTranscriptId = store.put(JSON.stringify({ role: 'user', text, at: new Date().toISOString() }));
   send(s, { type: 'final', text }); // original script, never transliterated
   let reply;
-  try { reply = handle(s, text); } catch (e) { console.error('[turn]', e); reply = say(s.lang, 'error'); }
+  try { reply = handle(s, text); } catch (e) { console.error('[turn]', e); reply = T(s, 'error'); }
   mark(s, 'intent_done');
   speak(s, reply);
 }
 
 function interpret(s, text) {
   const ctx = ctxFor(s);
+  const pending = s.pendingQuestion;
+  s.pendingQuestion = null;
+  const answered = answerPending(pending, text, ctx); // "gali wala" / "pehla" / "340 wala" -> completed intent
+  if (answered) { s.speculative = null; return answered; }
   const spec = s.speculative && s.speculative.text === text ? s.speculative.intent : null;
-  let intent = spec || parse(text, ctx);
   s.speculative = null;
-  // Answer to an open clarify question: merge it with what we already know.
-  const c = s.clarify;
-  if (c && intent.intent === 'clarify') {
-    if (c.intent.slot === 'direction' && c.intent.pending) {
-      const p = c.intent.pending, first = canonicalKey(p.customer.name.split(' ')[0]);
-      const named = tokenize(text).some((t) => canonicalKey(t.t).startsWith(first));
-      const merged = parse(`${named ? '' : p.customer.name} ${text} ${p.paise / 100}`, ctx);
-      if (merged.intent === 'add_entries') intent = merged;
-    }
-  }
-  if (c && c.intent.slot === 'correction_target' && intent.intent !== 'correct_slot') {
-    const merged = parse(`${text} ${c.text}`, ctx); // "340 wala" + "nahi, 430"
-    if (merged.intent === 'correct_slot') intent = merged;
-  }
-  s.clarify = null;
-  return intent;
+  return spec || parse(text, ctx);
 }
 
 function readback(s) {
   const lang = s.lang, t = today();
   const parts = s.pendingEntries.map((e) => {
-    const phrase = render(lang, e.direction === 'credit' ? 'entry_credit' : 'entry_payment', { name: e.customer.name, amount: toWords(e.paise, lang) });
-    return e.date === addDays(t, -1) ? `${say(lang, 'yesterday')} ${phrase}` : phrase;
+    const phrase = T(s, e.direction === 'credit' ? 'entry_credit' : 'entry_payment', { name: nm(e.customer), amount: W(s, e.paise) });
+    return e.date === addDays(t, -1) ? `${T(s, 'yesterday')} ${phrase}` : phrase;
   });
   const byCustomer = new Map();
   for (const e of s.pendingEntries) byCustomer.set(e.customer.name, e.customer);
@@ -215,9 +203,9 @@ function readback(s) {
     const mine = s.pendingEntries.filter((e) => e.customer.name === c.name);
     const prov = id ? ledger.provisionalBalance(id, mine.map((e) => ({ customerId: id, direction: e.direction, paise: e.paise })))
       : mine.reduce((a, e) => a + signed(e), 0);
-    return speakBalance(prov, lang, c.name);
+    return speakBalance(prov, lang, nm(c), SCRIPT);
   });
-  return `${parts.join(', ')}. ${balances.join(' ')} ${say(lang, 'confirm_q')}`;
+  return [parts.join(', ') + T(s, 'stop'), balances.join(' '), T(s, 'confirm_q')].join(' ');
 }
 
 function commit(s) {
@@ -232,7 +220,7 @@ function commit(s) {
   s.pendingEntries = [];
   s.pendingPromises = [];
   broadcastLedger();
-  return `${render(s.lang, 'saved')} ${names.map((id) => speakBalance(ledger.balancePaise(id), s.lang, ledger.findCustomers('').find((c) => c.id === id).name)).join(' ')}`;
+  return [T(s, 'saved'), ...names.map((id) => balanceLine(s, id))].join(' ');
 }
 
 function handle(s, text) {
@@ -250,13 +238,13 @@ function handle(s, text) {
       return readback(s);
 
     case 'confirm':
-      return s.pendingEntries.length ? commit(s) : say(lang, 'nothing');
+      return s.pendingEntries.length ? commit(s) : T(s, 'nothing');
 
     case 'deny':
-      if (!s.pendingEntries.length) return say(lang, 'nothing');
+      if (!s.pendingEntries.length) return T(s, 'nothing');
       s.pendingEntries = [];
       s.pendingPromises = [];
-      return say(lang, 'cancelled');
+      return T(s, 'cancelled');
 
     case 'correct_slot': {
       if (s.pendingEntries.length) { // before "haan": patch and read back again
@@ -264,7 +252,7 @@ function handle(s, text) {
         s.lastIntent = intent.patched;
         return readback(s);
       }
-      if (!s.lastCommit) return say(lang, 'nothing');
+      if (!s.lastCommit) return T(s, 'nothing');
       // After commit: soft-delete + re-insert in the ledger.
       const patch = { amount: { paise: intent.value }, direction: { direction: intent.value }, date: { date: intent.value } }[intent.slot]
         || (intent.slot === 'customer' ? { customerId: ensureCustomer(intent.value) } : {});
@@ -274,34 +262,34 @@ function handle(s, text) {
       s.lastIntent = intent.patched;
       broadcastLedger();
       const cid = ledger.db.prepare('SELECT customer_id FROM entries WHERE id = ?').get(s.lastCommit.ids[idxs[0]]).customer_id;
-      return `${render(lang, 'saved')} ${speakBalance(ledger.balancePaise(cid), lang, ledger.findCustomers('').find((c) => c.id === cid).name)}`;
+      return [T(s, 'saved'), balanceLine(s, cid)].join(' ');
     }
 
     case 'query_balance': {
-      if (!intent.customer) return say(lang, 'total', { amount: toWords(ledger.totalReceivablePaise(), lang) });
+      if (!intent.customer) return T(s, 'total', { amount: W(s, ledger.totalReceivablePaise()) });
       const id = findCustomerId(intent.customer);
-      return speakBalance(id ? ledger.balancePaise(id) : 0, lang, intent.customer.name);
+      return speakBalance(id ? ledger.balancePaise(id) : 0, lang, nm({ ...intent.customer, id }), SCRIPT);
     }
 
     case 'query_day_total':
-      return say(lang, 'day_total', { when: intent.date === today() ? say(lang, 'today') : intent.date,
-        credit: toWords(ledger.dayTotalPaise(intent.date, 'credit'), lang), payment: toWords(ledger.dayTotalPaise(intent.date, 'payment'), lang) });
+      return T(s, 'day_total', { when: dayWord(lang, dayDiff(intent.date, today()), SCRIPT) || intent.date,
+        credit: W(s, ledger.dayTotalPaise(intent.date, 'credit')), payment: W(s, ledger.dayTotalPaise(intent.date, 'payment')) });
 
     case 'undo':
-      if (!s.lastCommit) return say(lang, 'nothing');
+      if (!s.lastCommit) return T(s, 'nothing');
       for (const id of s.lastCommit.ids) ledger.undoEntry(id, { transcriptId: s.lastTranscriptId });
       s.lastCommit = null;
       broadcastLedger();
-      return say(lang, 'undone');
+      return T(s, 'undone');
 
     case 'create_customer':
       ensureCustomer({ name: intent.name });
       broadcastLedger();
-      return say(lang, 'created', { name: intent.name });
+      return T(s, 'created', { name: intent.name });
 
     case 'reminder_optin':
       ledger.setReminderOptIn(ensureCustomer(intent.customer), true);
-      return say(lang, 'optin', { name: intent.customer.name });
+      return T(s, 'optin', { name: nm(intent.customer) });
 
     case 'promise_note': { // a note, not money: saved straight away, balance untouched
       const p = intent.promise, customerId = ensureCustomer(p.customer);
@@ -310,29 +298,29 @@ function handle(s, text) {
       s.openPromise = { id, customer: { ...p.customer, id: customerId }, paise: p.paise, due_on: p.due_on };
       s.lastCustomer = s.openPromise.customer;
       broadcastLedger();
-      return intent.reply;
+      return T(s, 'promise_saved', { when: p.due_on ? dayWord(lang, dayDiff(p.due_on, today()), SCRIPT) || p.due_on : '', amount: W(s, p.paise) });
     }
 
     case 'promise_fulfil': {
       const p = intent.promise;
-      if (!p.id) return say(lang, 'nothing');
+      if (!p.id) return T(s, 'nothing');
       ledger.fulfilPromise(p.id, { date: intent.entry.date, paise: intent.entry.paise }, { transcriptId: s.lastTranscriptId });
       mark(s, 'commit');
       s.openPromise = null;
       broadcastLedger();
-      return `${render(lang, 'saved')} ${speakBalance(ledger.balancePaise(p.customer.id), lang, p.customer.name)}`;
+      return [T(s, 'saved'), balanceLine(s, p.customer.id, p.customer)].join(' ');
     }
 
     case 'clarify':
     case 'disambiguate':
-      s.clarify = { intent, text };
-      return intent.question;
+      s.pendingQuestion = pendingFrom(intent, text, s.lastIntent);
+      return questionFor(intent, { lang, script: SCRIPT, customers: ledger.findCustomers(''), lastIntent: s.lastIntent, nameOf: nm });
 
     case 'refuse':
-      return intent.safeReply;
+      return T(s, intent.reason === 'lending' ? 'refused_lending' : 'refused_diagnosis');
 
     default:
-      return say(lang, 'error');
+      return T(s, 'error');
   }
 }
 
@@ -356,7 +344,7 @@ app.post('/purge', (req, res) => {
   if (req.get('x-khata') !== '1') return res.status(403).json({ ok: false });
   purgeTranscripts(ledger.db);
   ledger.purge();
-  for (const s of sessions) Object.assign(s, { lastIntent: null, pendingEntries: [], pendingPromises: [], lastCommit: null, clarify: null, lastCustomer: null, openPromise: null });
+  for (const s of sessions) Object.assign(s, { lastIntent: null, pendingEntries: [], pendingPromises: [], lastCommit: null, pendingQuestion: null, lastCustomer: null, openPromise: null });
   broadcastLedger();
   res.json({ ok: true });
 });
@@ -375,15 +363,15 @@ wss.on('connection', (ws) => {
       case 'hello':
         if (LANGS.has(m.lang)) s.lang = m.lang;
         wireAdapters(s);
-        send(s, { type: 'session', id: s.id, lang: s.lang, mock: MOCK });
+        send(s, { type: 'session', id: s.id, lang: s.lang, mock: MOCK, script: SCRIPT });
         send(s, snapshot());
-        speak(s, aiDisclosure(s.lang).safeReply); // the literal first agent turn, before any task
+        speak(s, aiDisclosure(s.lang, SCRIPT).safeReply); // the literal first agent turn, before any task
         break;
       case 'lang':
         if (!LANGS.has(m.lang) || m.lang === s.lang) break;
         s.lang = m.lang;
         s.prisma.lang = s.timbre.lang = m.lang;
-        speak(s, aiDisclosure(s.lang).safeReply); // new language: disclose again in it
+        speak(s, aiDisclosure(s.lang, SCRIPT).safeReply); // new language: disclose again in it
         break;
       case 'ptt_down':
         s.metrics.turn = { t0: null, speech_end: null };

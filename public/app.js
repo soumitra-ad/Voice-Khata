@@ -9,6 +9,8 @@ let ws, ctx, talking = false;
 const ring = [];
 let sources = [], nextT = 0, ttsRate = 16000, firstChunk = false, leftover = null, endTimer = null, loud = 0;
 let customers = new Map();
+let mock = false, captured = 0, sentFrames = 0;
+const MOCK_HUD = 'TTFB: MOCK — not a real measurement';
 
 const send = (o) => { if (ws && ws.readyState === 1) ws.send(typeof o === 'string' || o instanceof ArrayBuffer ? o : JSON.stringify(o)); };
 const rupees = (p) => '₹' + (Math.abs(p) / 100).toLocaleString('en-IN');
@@ -30,10 +32,14 @@ async function start() {
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
     const node = new AudioWorkletNode(ctx, 'mic');
+    node.onprocessorerror = (e) => console.error('[capture] worklet error', e);
     const mute = ctx.createGain(); mute.gain.value = 0; // keeps the worklet pulled without echoing the mic
     ctx.createMediaStreamSource(media).connect(node).connect(mute).connect(ctx.destination);
     node.port.onmessage = (e) => onFrame(e.data);
+    // Watchdog: a silent worklet would otherwise look like a working mic.
+    setTimeout(() => { if (!captured) { console.error('[capture] no frames from the worklet after 2 s'); note('Mic is not producing audio.'); } }, 2000);
   } catch (err) {
+    console.error('[capture]', err);
     note('Mic unavailable (' + err.message + '). Mock mode still works: hold the button.');
   }
   connect();
@@ -41,8 +47,9 @@ async function start() {
 
 function onFrame({ pcm, rms }) {
   $('meter').firstChild.style.width = Math.min(100, rms * 400) + '%';
+  if (++captured % 10 === 0) $('frames').textContent = 'mic frames ' + captured + ' · sent ' + sentFrames;
   if (!talking) { ring.push(pcm); if (ring.length > RING_FRAMES) ring.shift(); return; }
-  send(pcm);
+  send(pcm); sentFrames++;
   // Barge-in on >180 ms of speech while the agent is audible. Only while PTT is held, so agent echo cannot trigger it.
   if (sources.length && rms > BARGE_RMS) { if (++loud >= BARGE_FRAMES) { stopAudio(); send({ type: 'barge_in' }); loud = 0; } } else loud = 0;
 }
@@ -53,7 +60,7 @@ function pttDown(e) {
   talking = true; loud = 0;
   $('ptt').classList.add('on');
   send({ type: 'ptt_down' });
-  for (const f of ring.splice(0)) send(f); // pre-roll: the first word is never clipped
+  for (const f of ring.splice(0)) { send(f); sentFrames++; } // pre-roll: the first word is never clipped
 }
 
 function pttUp(e) {
@@ -117,7 +124,11 @@ function connect() {
     if (ev.data instanceof ArrayBuffer) { playChunk(ev.data); return; }
     const m = JSON.parse(ev.data);
     switch (m.type) {
-      case 'session': $('mode').textContent = m.mock ? 'MOCK voice (canned transcripts)' : 'Gnani Prisma + Timbre'; note(''); break;
+      case 'session':
+        mock = m.mock;
+        $('mode').textContent = m.mock ? 'MOCK voice (canned transcripts)' : 'Gnani Prisma + Timbre';
+        if (mock) $('hud').textContent = MOCK_HUD;
+        note(''); break;
       case 'state': $('state').textContent = m.state; break;
       case 'partial': $('partial').textContent = m.text; break;
       case 'final': $('partial').textContent = ''; line('u', m.text); break;
@@ -126,7 +137,7 @@ function connect() {
       case 'tts_end': endTimer = setTimeout(() => send({ type: 'play_end', gen: m.gen }), Math.max(0, (nextT - ctx.currentTime) * 1000)); break;
       case 'flush': stopAudio(); break;
       case 'ledger': renderLedger(m); break;
-      case 'metrics': $('hud').textContent = 'TTFB p50 ' + m.p50 + 'ms · p95 ' + m.p95 + 'ms · n ' + m.n; break;
+      case 'metrics': $('hud').textContent = mock ? MOCK_HUD + ' (n ' + m.n + ')' : 'TTFB p50 ' + m.p50 + 'ms · p95 ' + m.p95 + 'ms · n ' + m.n; break;
       default:
     }
   };

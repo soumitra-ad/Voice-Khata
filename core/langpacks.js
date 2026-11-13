@@ -226,6 +226,97 @@ const PACKS = {
   },
 };
 
+// Replies the server needs beyond intent templates (Latin). Kept here so server.js holds no user-facing text.
+Object.assign(PACKS.hi.templates, {
+  stop: '.',
+  confirm_q: 'Sahi hai?', cancelled: 'Theek hai, nahi likha.', nothing: 'Abhi kuch pending nahi hai.',
+  today: 'aaj', yesterday: 'kal', tomorrow: 'kal', day_after: 'parso',
+  total: 'Dukaan ka kul baaki {amount} hai.', day_total: '{when} udhaar {credit}, jama {payment}.', undone: 'Pichhli entry hata di.',
+  created: '{name} ka khata khul gaya.', optin: '{name} ke reminder ki anumati likh li.', error: 'Maaf kijiye, phir se boliye.',
+});
+Object.assign(PACKS.mr.templates, {
+  stop: '.',
+  confirm_q: 'Barobar?', cancelled: 'Theek aahe, lihile nahi.', nothing: 'Aata kahi baki nahi.',
+  today: 'aaj', yesterday: 'kal', tomorrow: 'udya', day_after: 'parva', clarify_target: '{options}?',
+  total: 'Dukanachi ekun baki {amount} aahe.', day_total: '{when} udhari {credit}, jama {payment}.', undone: 'Magchi nond kadhli.',
+  created: '{name} cha khata ughadla.', optin: '{name} chya reminder chi parvangi lihili.', error: 'Maaf kara, parat sanga.',
+});
+Object.assign(PACKS.bn.templates, {
+  stop: '.',
+  confirm_q: 'Thik ache?', cancelled: 'Thik ache, likhlam na.', nothing: 'Ekhon kichu baki nei.',
+  today: 'aaj', yesterday: 'gotokal', tomorrow: 'agamikal', day_after: 'porshu', clarify_target: '{options}?',
+  total: 'Dokaner mot baki {amount}.', day_total: '{when} baki {credit}, jama {payment}.', undone: 'Ager entry muchhe dilam.',
+  created: '{name} er khata khola holo.', optin: '{name} er reminder er onumoti likhlam.', error: 'Dukkhito, abar bolun.',
+});
+Object.assign(PACKS.en.templates, {
+  stop: '.',
+  confirm_q: 'Correct?', cancelled: 'Okay, not saved.', nothing: 'Nothing pending.',
+  today: 'today', yesterday: 'yesterday', tomorrow: 'tomorrow', day_after: 'the day after tomorrow', clarify_target: '{options}?',
+  total: 'Total due to the shop is {amount}.', day_total: 'Credit {when} {credit}, payments {payment}.', undone: 'Removed the last entry.',
+  created: 'Opened an account for {name}.', optin: 'Noted that {name} agreed to reminders.', error: 'Sorry, please say that again.',
+});
+
+// The same replies in native script (TTS_SCRIPT=native). English has none: it falls back to Latin.
+PACKS.hi.native = {
+  stop: '।',
+  disclosure: 'नमस्ते! मैं एक AI सहायक हूँ, इंसान नहीं। बताइए, किसका हिसाब लिखना है?',
+  entry_credit: '{name} को {amount} उधार', entry_payment: '{name} ने {amount} जमा किए',
+  readback: '{entries}। {name} का नया बाकी {balance}। सही है?',
+  balance_due: '{name} का {amount} बाकी है।', balance_advance: '{name} ने {amount} एडवांस दिया है।', balance_zero: '{name} का हिसाब बराबर है।',
+  clarify_direction: '{name} ने दिया, या {name} को दिया?', clarify_customer: 'किसके खाते में?', clarify_amount: 'कितने रुपये?',
+  clarify_repeat: 'फिर से बोलिए?', disambiguate: 'कौन से {name}: {options}?', saved: 'लिख लिया।',
+  refused_lending: 'माफ़ कीजिए, मैं लोन, ब्याज या EMI का काम नहीं करता। सिर्फ़ दुकान का खाता।',
+  refused_diagnosis: 'माफ़ कीजिए, मैं बीमारी या दवाई की सलाह नहीं दे सकता। डॉक्टर से पूछिए।',
+  reminder: 'नमस्ते {name}, आपके खाते में {amount} बाकी है। जब सुविधा हो, चुका दीजिए। धन्यवाद।',
+  reminder_no_optin: '{name} ने रिमाइंडर के लिए हाँ नहीं कहा है, इसलिए रिमाइंडर नहीं भेजूँगा।',
+  promise_saved: 'ठीक, {when} {amount} मिलने का नोट लिख दिया।', clarify_target: '{options}?', target_option: '{amount} वाला', target_join: 'या',
+  clarify_future_credit: 'उधार अभी दिया, या बाद में देंगे?',
+  confirm_q: 'सही है?', cancelled: 'ठीक है, नहीं लिखा।', nothing: 'अभी कुछ बाकी नहीं है।',
+  today: 'आज', yesterday: 'कल', tomorrow: 'कल', day_after: 'परसों',
+  total: 'दुकान का कुल बाकी {amount} है।', day_total: '{when} उधार {credit}, जमा {payment}।', undone: 'पिछली एंट्री हटा दी।',
+  created: '{name} का खाता खुल गया।', optin: '{name} के रिमाइंडर की अनुमति लिख ली।', error: 'माफ़ कीजिए, फिर से बोलिए।',
+};
+// TODO native-speaker verify (Marathi)
+PACKS.mr.native = {
+  stop: '.',
+  disclosure: 'नमस्कार! मी एक AI सहायक आहे, माणूस नाही. सांगा, कोणाचा हिशोब लिहायचा?',
+  entry_credit: '{name} ला {amount} उधारी', entry_payment: '{name} ने {amount} जमा केले',
+  readback: '{entries}. {name} ची नवीन बाकी {balance}. बरोबर?',
+  balance_due: '{name} ची {amount} बाकी आहे.', balance_advance: '{name} ने {amount} ॲडव्हान्स दिले आहेत.', balance_zero: '{name} चा हिशोब बरोबर आहे.',
+  clarify_direction: '{name} ने दिले, की {name} ला दिले?', clarify_customer: 'कोणाच्या खात्यात?', clarify_amount: 'किती रुपये?',
+  clarify_repeat: 'परत सांगा?', disambiguate: 'कोणता {name}: {options}?', saved: 'लिहून घेतले.',
+  refused_lending: 'माफ करा, मी कर्ज, व्याज किंवा EMI चे काम करत नाही. फक्त दुकानाचा खाता.',
+  refused_diagnosis: 'माफ करा, मी आजार किंवा औषधाचा सल्ला देऊ शकत नाही. डॉक्टरला विचारा.',
+  reminder: 'नमस्कार {name}, तुमच्या खात्यात {amount} बाकी आहे. सोयीनुसार भरावे. धन्यवाद.',
+  reminder_no_optin: '{name} नी रिमाइंडरसाठी हो म्हटले नाही, म्हणून रिमाइंडर पाठवणार नाही.',
+  promise_saved: 'ठीक, {when} {amount} मिळण्याची नोंद केली.', clarify_target: '{options}?', target_option: '{amount} वाला', target_join: 'की',
+  clarify_future_credit: 'उधारी आता दिली, की नंतर देणार?',
+  confirm_q: 'बरोबर?', cancelled: 'ठीक आहे, लिहिले नाही.', nothing: 'आता काही बाकी नाही.',
+  today: 'आज', yesterday: 'काल', tomorrow: 'उद्या', day_after: 'परवा',
+  total: 'दुकानाची एकूण बाकी {amount} आहे.', day_total: '{when} उधारी {credit}, जमा {payment}.', undone: 'मागची नोंद काढली.',
+  created: '{name} चा खाता उघडला.', optin: '{name} च्या रिमाइंडरची परवानगी लिहिली.', error: 'माफ करा, परत सांगा.',
+};
+// TODO native-speaker verify (Bengali)
+PACKS.bn.native = {
+  stop: '।',
+  disclosure: 'নমস্কার! আমি একটি AI সহায়ক, মানুষ নই। বলুন, কার হিসাব লিখব?',
+  entry_credit: '{name} কে {amount} বাকি', entry_payment: '{name} {amount} জমা দিলেন',
+  readback: '{entries}। {name} এর নতুন বাকি {balance}। ঠিক আছে?',
+  balance_due: '{name} এর {amount} বাকি আছে।', balance_advance: '{name} {amount} অ্যাডভান্স দিয়েছেন।', balance_zero: '{name} এর হিসাব মিলে গেছে।',
+  clarify_direction: '{name} দিয়েছেন, না {name} কে দিয়েছেন?', clarify_customer: 'কার খাতায়?', clarify_amount: 'কত টাকা?',
+  clarify_repeat: 'আবার বলবেন?', disambiguate: 'কোন {name}: {options}?', saved: 'লিখে নিলাম।',
+  refused_lending: 'দুঃখিত, আমি ঋণ, সুদ বা EMI এর কাজ করি না। শুধু দোকানের খাতা।',
+  refused_diagnosis: 'দুঃখিত, আমি অসুখ বা ওষুধের পরামর্শ দিতে পারি না। ডাক্তারকে জিজ্ঞেস করুন।',
+  reminder: 'নমস্কার {name}, আপনার খাতায় {amount} বাকি আছে। সুবিধামতো শোধ করবেন। ধন্যবাদ।',
+  reminder_no_optin: '{name} রিমাইন্ডারের জন্য রাজি হননি, তাই রিমাইন্ডার পাঠাব না।',
+  promise_saved: 'ঠিক আছে, {when} {amount} পাওয়ার কথা লিখে রাখলাম।', clarify_target: '{options}?', target_option: '{amount} টাকার টা', target_join: 'না',
+  clarify_future_credit: 'বাকি এখন দিলেন, না পরে দেবেন?',
+  confirm_q: 'ঠিক আছে?', cancelled: 'ঠিক আছে, লিখলাম না।', nothing: 'এখন কিছু বাকি নেই।',
+  today: 'আজ', yesterday: 'গতকাল', tomorrow: 'আগামীকাল', day_after: 'পরশু',
+  total: 'দোকানের মোট বাকি {amount}।', day_total: '{when} বাকি {credit}, জমা {payment}।', undone: 'আগের এন্ট্রি মুছে দিলাম।',
+  created: '{name} এর খাতা খোলা হলো।', optin: '{name} এর রিমাইন্ডারের অনুমতি লিখলাম।', error: 'দুঃখিত, আবার বলুন।',
+};
+
 const LIST_FIELDS = ['credit_verbs', 'payment_verbs', 'give_verbs', 'take_verbs', 'yes', 'no', 'possessive', 'possessive_suffix',
   'agent', 'agent_suffix', 'recipient', 'recipient_suffix', 'source', 'prep_recipient', 'prep_source', 'past', 'future', 'query',
   'undo', 'create', 'customer_nouns', 'reminder', 'lending', 'diagnosis', 'conj', 'filler', 'wala', 'first', 'second', 'third'];
@@ -251,12 +342,19 @@ function detectLang(words) {
   return best;
 }
 
-function render(lang, key, vars = {}) {
-  const t = (PACKS[lang] && PACKS[lang].templates && PACKS[lang].templates[key]) || PACKS.hi.templates[key];
+// script: 'latin' (default) or 'native'. Packs without templates (bho, mai) reply in Hindi.
+function render(lang, key, vars = {}, script = 'latin') {
+  const P = PACKS[lang] && PACKS[lang].templates ? PACKS[lang] : PACKS.hi;
+  const t = (script === 'native' && P.native && P.native[key]) || P.templates[key]
+    || (script === 'native' && P === PACKS.hi && PACKS.hi.native[key]) || PACKS.hi.templates[key];
   if (!t) throw new Error(`no template ${key}`);
   return t.replace(/\{(\w+)\}/g, (_, k) => (vars[k] === undefined ? '' : String(vars[k])))
-    .replace(/\s{2,}/g, ' ').replace(/\s+([.,?])/g, '$1').trim(); // empty vars leave no stray spaces
+    .replace(/\s{2,}/g, ' ').replace(/\s+([.,?।])/g, '$1').trim(); // empty vars leave no stray spaces
 }
+
+// Spoken day word relative to today: -1 yesterday, 0 today, 1 tomorrow, 2 day after. null if no word exists.
+const DAY_KEYS = { '-1': 'yesterday', 0: 'today', 1: 'tomorrow', 2: 'day_after' };
+const dayWord = (lang, offset, script = 'latin') => (DAY_KEYS[offset] ? render(lang, DAY_KEYS[offset], {}, script) : null);
 
 // Resolve a (possibly transliterated) token to a lexicon word: EXACT, then light key (long vowels), then canonical key.
 // A key shared by words with different roles (ka/ko/ke all fold to "k") resolves to nothing.
@@ -278,4 +376,4 @@ function lexWord(w) {
   return c.length >= 4 ? resolve(CANON, c) : null;
 }
 
-module.exports = { PACKS, UNION, detectLang, render, lexWord };
+module.exports = { PACKS, UNION, detectLang, render, dayWord, lexWord };

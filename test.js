@@ -426,3 +426,83 @@ test('original script is preserved in returned text and stored transcript', () =
   const S = new SecureStore(':memory:', 'ef'.repeat(32));
   for (const t of [text, 'রমেশের 340 ধার', 'रमेशचा 340 उधार']) assert.equal(S.get(S.put(t)), t);
 });
+
+const D = require('./core/dialog');
+const { render } = require('./core/langpacks');
+
+test('dialog: disambiguation answered with just a tag, never the whole sentence', () => {
+  const customers = [{ id: 1, name: 'Ramesh', aliases: ['gali wala'] }, { id: 2, name: 'Ramesh', aliases: ['station wala'] }];
+  const ctx = { today: TODAY, customers };
+  const q = parse('Ramesh ka 340 udhaar', ctx);
+  assert.equal(q.intent, 'disambiguate');
+  assert.equal(D.questionFor(q, { lang: 'hi', customers }), 'Kaunse Ramesh: gali wala ya station wala?');
+  const pending = D.pendingFrom(q, 'Ramesh ka 340 udhaar');
+  for (const [answer, id] of [['gali wala', 1], ['station', 2], ['station wala', 2], ['pehla', 1], ['doosra', 2], ['गली वाला', 1], ['दूसरा', 2]]) {
+    const r = D.answerPending(pending, answer, ctx);
+    assert.equal(r.intent, 'add_entries', answer);
+    assert.deepEqual([r.entries[0].customer.id, r.entries[0].paise, r.entries[0].direction], [id, 34000, 'credit'], answer);
+  }
+  assert.equal(D.answerPending(pending, 'Suresh ka 500 udhaar', ctx), null); // a new sentence is not an answer
+  assert.equal(D.answerPending(pending, 'wala', ctx), null);                 // names nobody
+});
+
+test('dialog: "340 wala ya 200 wala?" answered with pehla / doosra / an amount', () => {
+  const last = parse('Ramesh ka kal 340 udhaar tha, parso 200 diya tha', { today: TODAY });
+  const c = parse('nahi, 430', { today: TODAY, lastIntent: last });
+  assert.equal(D.questionFor(c, { lang: 'hi', lastIntent: last }), '340 wala ya 200 wala?');
+  const pending = D.pendingFrom(c, 'nahi, 430', last);
+  for (const [answer, i] of [['pehla', 0], ['doosra', 1], ['340 wala', 0], ['200 wala', 1], ['udhaar wala', 0], ['जमा वाला', 1], ['पहला', 0]]) {
+    const r = D.answerPending(pending, answer, { today: TODAY });
+    assert.equal(r.intent, 'correct_slot', answer);
+    assert.equal(r.entryIndex, i, answer);
+    assert.equal(r.patched.entries[i].paise, 43000, answer);
+    assert.equal(r.patched.entries[1 - i].paise, last.entries[1 - i].paise, answer);
+  }
+  assert.equal(D.answerPending(pending, 'teesra', { today: TODAY }), null);
+});
+
+test('dialog: direction clarify answered with "ne diya" keeps the amount', () => {
+  const q = parse('Ramesh 200', { today: TODAY });
+  const pending = D.pendingFrom(q, 'Ramesh 200');
+  const r = D.answerPending(pending, 'Ramesh ne diya', { today: TODAY });
+  assert.deepEqual([r.intent, r.entries[0].direction, r.entries[0].paise], ['add_entries', 'payment', 20000]);
+  assert.equal(D.answerPending(pending, 'Ramesh ko diya', { today: TODAY }).entries[0].direction, 'credit');
+});
+
+test('native-script replies: number words and templates', () => {
+  assert.equal(toWords(34000, 'hi', 'native'), 'तीन सौ चालीस रुपये');
+  assert.equal(toWords(250050, 'hi', 'native'), 'दो हज़ार पाँच सौ रुपये और पचास पैसे');
+  assert.equal(toWords(34000, 'bn', 'native'), 'তিন শো চল্লিশ টাকা');
+  assert.equal(toWords(2500, 'mr', 'native'), 'पंचवीस रुपये');
+  assert.equal(toWords(34000, 'en', 'native'), toWords(34000, 'en')); // English has no native script
+  assert.equal(toWords(34000, 'hi'), 'teen sau chaalees rupaye');       // Latin stays the default
+
+  assert.equal(speakBalance(23000, 'hi', 'रमेश', 'native'), 'रमेश का दो सौ तीस रुपये बाकी है।');
+  assert.match(speakBalance(-5000, 'hi', 'रमेश', 'native'), /एडवांस दिया है/);
+  assert.equal(speakBalance(23000, 'bn', 'রমেশ', 'native'), 'রমেশ এর দুই শো ত্রিশ টাকা বাকি আছে।');
+  const d = G.aiDisclosure('hi', 'native').safeReply;
+  assert.match(d, /AI/);
+  assert.match(d, /[ऀ-ॿ]/);
+  assert.match(G.aiDisclosure('bn', 'native').safeReply, /[ঀ-৿]/);
+
+  // Every Latin reply template has a native twin, written in that script.
+  const SCRIPT_RE = { hi: /[ऀ-ॿ]/, mr: /[ऀ-ॿ]/, bn: /[ঀ-৿]/ };
+  for (const lang of ['hi', 'mr', 'bn']) {
+    for (const key of Object.keys(PACKS[lang].templates)) {
+      assert.ok(PACKS[lang].native[key], `${lang}.native.${key} missing`);
+      const out = render(lang, key, { name: 'X', amount: '1', options: '1', entries: '1', balance: '1', when: '1', credit: '1', payment: '1' }, 'native');
+      if (/[A-Za-z]{3}/.test(PACKS[lang].templates[key].replace(/\{\w+\}|AI|EMI/g, ''))) assert.match(out, SCRIPT_RE[lang], `${lang}.${key}`);
+    }
+  }
+});
+
+test('server.js holds no user-facing reply strings', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+  assert.doesNotMatch(src, /[ऀ-৿]/, 'no Devanagari/Bengali text in server.js');
+  assert.doesNotMatch(src, /REPLIES|const say\b/);
+  const keys = new Set(Object.values(PACKS).flatMap((p) => Object.keys(p.templates || {})));
+  const fragments = Object.values(PACKS).flatMap((p) => [...Object.values(p.templates || {}), ...Object.values(p.native || {})])
+    .flatMap((t) => t.split(/\{\w+\}/)).map((x) => x.trim())
+    .filter((x) => x.length >= 6 && /\p{L}{3}/u.test(x) && !keys.has(x));
+  for (const frag of new Set(fragments)) assert.ok(!src.includes(frag), `server.js contains reply text: "${frag}"`);
+});
