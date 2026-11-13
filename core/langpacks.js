@@ -31,10 +31,9 @@ const PACKS = {
     conj: w('aur phir fir tab'),
     filler: w('hai hain h mein me bhi toh wala wale waala saaman samaan saman kiya kar karo abhi sab sabka sabki sabhi aap main mera mere unka uska uske iska paisa paise tak bas'),
     templates: {
-      disclosure: 'Namaste! Main ek AI sahayak hoon, insaan nahi. Bataiye, kiska hisaab likhna hai?',
-      entry_credit: '{name} ko {amount} udhaar',
-      entry_payment: '{name} ne {amount} jama kiye',
-      readback: '{entries}. {name} ka naya baaki {balance}. Sahi hai?',
+      disclosure: 'Namaste, main AI sahayak hoon. Kiska hisaab likhun?',
+      entry_credit: '{amount} udhaar',
+      entry_payment: '{amount} jama',
       balance_due: '{name} ka {amount} baaki hai.',
       balance_advance: '{name} ne {amount} advance diya hai.',
       balance_zero: '{name} ka hisaab barabar hai.',
@@ -44,10 +43,10 @@ const PACKS = {
       clarify_repeat: 'Phir se boliye?',
       disambiguate: 'Kaunse {name}: {options}?',
       saved: 'Likh liya.',
-      refused_lending: 'Maaf kijiye, main loan, byaaj ya EMI ka kaam nahi karta. Sirf dukaan ka khata.',
-      refused_diagnosis: 'Maaf kijiye, main bimari ya dawai ki salah nahi de sakta. Doctor se poochhiye.',
-      reminder: 'Namaste {name}, aapke khaate mein {amount} baaki hai. Jab suvidha ho, chuka dijiye. Dhanyavaad.',
-      reminder_no_optin: '{name} ne reminder ke liye haan nahi kaha hai, isliye reminder nahi bhejunga.',
+      refused_lending: 'Maaf kijiye, loan, byaaj, EMI ka kaam nahi karta.',
+      refused_diagnosis: 'Maaf kijiye, dawai ki salah nahi de sakta.',
+      reminder: 'Namaste {name}, {amount} baaki. Jab suvidha ho, chuka dijiye.',
+      reminder_no_optin: '{name} ne reminder ki anumati nahi di.',
       promise_saved: 'Theek, {when} {amount} milne ka note likh diya.',
       clarify_target: '{options}?',
       target_option: '{amount} wala',
@@ -57,6 +56,8 @@ const PACKS = {
   },
   mr: {
     name: 'Marathi',
+    // TODO native-speaker verify: Marathi joins hundreds into one word.
+    hundreds_1_9: w('शंभर दोनशे तीनशे चारशे पाचशे सहाशे सातशे आठशे नऊशे'),
     credit_verbs: w('udhari udhar baki baaki'),
     payment_verbs: w('jama bharle bharla parat chukavle chukavla'),
     give_verbs: w('dile dila dili dya deil denar'),
@@ -81,10 +82,9 @@ const PACKS = {
     conj: w('ani aani mag nantar'),
     filler: w('aahe ahe aahet madhe'),
     templates: {
-      disclosure: 'Namaskar! Mi ek AI sahayak aahe, manus nahi. Sanga, konacha hishob lihaycha?',
-      entry_credit: '{name} la {amount} udhari',
-      entry_payment: '{name} ne {amount} jama kele',
-      readback: '{entries}. {name} chi navin baki {balance}. Barobar?',
+      disclosure: 'Namaskar, mi AI sahayak aahe. Konacha hishob lihu?',
+      entry_credit: '{amount} udhari',
+      entry_payment: '{amount} jama',
       balance_due: '{name} chi {amount} baki aahe.',
       balance_advance: '{name} ne {amount} advance dile aahet.',
       balance_zero: '{name} cha hishob barobar aahe.',
@@ -94,10 +94,10 @@ const PACKS = {
       clarify_repeat: 'Parat sanga?',
       disambiguate: 'Konta {name}: {options}?',
       saved: 'Lihun ghetle.',
-      refused_lending: 'Maaf kara, mi karj, vyaj kiva EMI che kaam karat nahi. Fakta dukanacha khata.',
-      refused_diagnosis: 'Maaf kara, mi aajar kiva aushadhacha salla deu shakat nahi. Doctor la vichara.',
-      reminder: 'Namaskar {name}, tumchya khatyat {amount} baki aahe. Soyi asel tevha bharave. Dhanyavad.',
-      reminder_no_optin: '{name} ni reminder sathi ho mhatle nahi, mhanun reminder pathavnar nahi.',
+      refused_lending: 'Maaf kara, karj, vyaj, EMI che kaam karat nahi.',
+      refused_diagnosis: 'Maaf kara, aushadhacha salla deu shakat nahi.',
+      reminder: 'Namaskar {name}, {amount} baki aahe. Soyi asel tevha bharave.',
+      reminder_no_optin: '{name} ni reminder chi parvangi dili nahi.',
       promise_saved: 'Theek, {when} {amount} milnyachi nond keli.',
       target_option: '{amount} vala',
       target_join: ' ki ',
@@ -106,6 +106,8 @@ const PACKS = {
   },
   bn: {
     name: 'Bengali',
+    // TODO native-speaker verify: Bengali joins hundreds into one word.
+    hundreds_1_9: w('একশ দুইশ তিনশ চারশ পাঁচশ ছয়শ সাতশ আটশ নয়শ'),
     credit_verbs: w('baki dhar dhaar udhar'),
     payment_verbs: w('jama shodh shodhlo ferot phirot porishodh'),
     give_verbs: w('diyeche dilo diyechilo dilam diyechi dibe debe dao dite'),
@@ -130,10 +132,9 @@ const PACKS = {
     filler: w('ache achhe holo'),
     subject_first: true,
     templates: {
-      disclosure: 'Nomoskar! Ami ekti AI sahayok, manush noi. Bolun, kar hisab likhbo?',
-      entry_credit: '{name} ke {amount} baki',
-      entry_payment: '{name} {amount} jama dilen',
-      readback: '{entries}. {name} er notun baki {balance}. Thik ache?',
+      disclosure: 'Nomoskar, ami AI sahayok. Kar hisab likhbo?',
+      entry_credit: '{amount} baki',
+      entry_payment: '{amount} jama',
       balance_due: '{name} er {amount} baki ache.',
       balance_advance: '{name} {amount} advance diyechen.',
       balance_zero: '{name} er hisab mile geche.',
@@ -143,10 +144,10 @@ const PACKS = {
       clarify_repeat: 'Abar bolben?',
       disambiguate: 'Kon {name}: {options}?',
       saved: 'Likhe nilam.',
-      refused_lending: 'Dukkhito, ami rin, sud ba EMI er kaj kori na. Shudhu dokaner khata.',
-      refused_diagnosis: 'Dukkhito, ami oshukh ba oshudher poramorsho dite pari na. Doctor ke jiggesh korun.',
-      reminder: 'Nomoskar {name}, apnar khatay {amount} baki ache. Subidha moto shodh korben. Dhonnobad.',
-      reminder_no_optin: '{name} reminder er jonno raji hon ni, tai reminder pathabo na.',
+      refused_lending: 'Dukkhito, rin, sud, EMI er kaj kori na.',
+      refused_diagnosis: 'Dukkhito, oshudher poramorsho dite pari na.',
+      reminder: 'Nomoskar {name}, {amount} baki ache. Subidha moto shodh korben.',
+      reminder_no_optin: '{name} reminder e raji hon ni.',
       promise_saved: 'Thik ache, {when} {amount} pawar kotha likhe rakhlam.',
       target_option: '{amount} takar ta',
       target_join: ' na ',
@@ -179,10 +180,9 @@ const PACKS = {
     filler: w('the a an is has have for on in my his her me i he she it please this that does'),
     subject_first: true,
     templates: {
-      disclosure: 'Hello! I am an AI assistant, not a person. Whose account should I update?',
-      entry_credit: '{amount} credit to {name}',
-      entry_payment: '{amount} paid by {name}',
-      readback: '{entries}. {name} now owes {balance}. Correct?',
+      disclosure: 'Hello, I am an AI assistant. Whose account?',
+      entry_credit: '{amount} credit',
+      entry_payment: '{amount} paid',
       balance_due: '{name} owes {amount}.',
       balance_advance: '{name} has paid {amount} in advance.',
       balance_zero: '{name} is fully settled.',
@@ -192,14 +192,14 @@ const PACKS = {
       clarify_repeat: 'Could you say that again?',
       disambiguate: 'Which {name}: {options}?',
       saved: 'Saved.',
-      refused_lending: 'Sorry, I do not handle loans, interest or EMI. Only the shop ledger.',
+      refused_lending: 'Sorry, I do not handle loans, interest or EMI.',
       refused_diagnosis: 'Sorry, I cannot give medical advice. Please ask a doctor.',
-      reminder: 'Hello {name}, your account shows {amount} due. Please settle when convenient. Thank you.',
-      reminder_no_optin: '{name} has not agreed to reminders, so I will not send one.',
+      reminder: 'Hello {name}, {amount} is due. Please pay when convenient.',
+      reminder_no_optin: '{name} has not agreed to reminders.',
       promise_saved: 'Okay, noted that {amount} is promised {when}.',
       target_option: 'the {amount} one',
       target_join: ' or ',
-      clarify_future_credit: 'Did you give the credit already, or will you give it later?',
+      clarify_future_credit: 'Credit given now, or later?',
     },
   },
   // EXPERIMENTAL: lexicon-only for parsing. No templates; replies fall back to Hindi.
@@ -228,6 +228,7 @@ const PACKS = {
 
 // Replies the server needs beyond intent templates (Latin). Kept here so server.js holds no user-facing text.
 Object.assign(PACKS.hi.templates, {
+  short_due: 'Baaki {amount}.', short_advance: 'Advance {amount}.', short_zero: 'Hisaab barabar.', tag_option: '{tag} wala',
   stop: '.',
   confirm_q: 'Sahi hai?', cancelled: 'Theek hai, nahi likha.', nothing: 'Abhi kuch pending nahi hai.',
   today: 'aaj', yesterday: 'kal', tomorrow: 'kal', day_after: 'parso',
@@ -235,6 +236,7 @@ Object.assign(PACKS.hi.templates, {
   created: '{name} ka khata khul gaya.', optin: '{name} ke reminder ki anumati likh li.', error: 'Maaf kijiye, phir se boliye.',
 });
 Object.assign(PACKS.mr.templates, {
+  short_due: 'Baki {amount}.', short_advance: 'Advance {amount}.', short_zero: 'Hishob barobar.', tag_option: '{tag} vala',
   stop: '.',
   confirm_q: 'Barobar?', cancelled: 'Theek aahe, lihile nahi.', nothing: 'Aata kahi baki nahi.',
   today: 'aaj', yesterday: 'kal', tomorrow: 'udya', day_after: 'parva', clarify_target: '{options}?',
@@ -242,6 +244,7 @@ Object.assign(PACKS.mr.templates, {
   created: '{name} cha khata ughadla.', optin: '{name} chya reminder chi parvangi lihili.', error: 'Maaf kara, parat sanga.',
 });
 Object.assign(PACKS.bn.templates, {
+  short_due: 'Baki {amount}.', short_advance: 'Advance {amount}.', short_zero: 'Hisab mile geche.', tag_option: '{tag} wala',
   stop: '.',
   confirm_q: 'Thik ache?', cancelled: 'Thik ache, likhlam na.', nothing: 'Ekhon kichu baki nei.',
   today: 'aaj', yesterday: 'gotokal', tomorrow: 'agamikal', day_after: 'porshu', clarify_target: '{options}?',
@@ -249,6 +252,7 @@ Object.assign(PACKS.bn.templates, {
   created: '{name} er khata khola holo.', optin: '{name} er reminder er onumoti likhlam.', error: 'Dukkhito, abar bolun.',
 });
 Object.assign(PACKS.en.templates, {
+  short_due: '{amount} due.', short_advance: '{amount} advance.', short_zero: 'Fully settled.', tag_option: 'the {tag} one',
   stop: '.',
   confirm_q: 'Correct?', cancelled: 'Okay, not saved.', nothing: 'Nothing pending.',
   today: 'today', yesterday: 'yesterday', tomorrow: 'tomorrow', day_after: 'the day after tomorrow', clarify_target: '{options}?',
@@ -258,17 +262,17 @@ Object.assign(PACKS.en.templates, {
 
 // The same replies in native script (TTS_SCRIPT=native). English has none: it falls back to Latin.
 PACKS.hi.native = {
+  short_due: 'बाकी {amount}।', short_advance: 'एडवांस {amount}।', short_zero: 'हिसाब बराबर।', tag_option: '{tag} वाला',
   stop: '।',
-  disclosure: 'नमस्ते! मैं एक AI सहायक हूँ, इंसान नहीं। बताइए, किसका हिसाब लिखना है?',
-  entry_credit: '{name} को {amount} उधार', entry_payment: '{name} ने {amount} जमा किए',
-  readback: '{entries}। {name} का नया बाकी {balance}। सही है?',
+  disclosure: 'नमस्ते, मैं AI सहायक हूँ। किसका हिसाब लिखूँ?',
+  entry_credit: '{amount} उधार', entry_payment: '{amount} जमा',
   balance_due: '{name} का {amount} बाकी है।', balance_advance: '{name} ने {amount} एडवांस दिया है।', balance_zero: '{name} का हिसाब बराबर है।',
   clarify_direction: '{name} ने दिया, या {name} को दिया?', clarify_customer: 'किसके खाते में?', clarify_amount: 'कितने रुपये?',
   clarify_repeat: 'फिर से बोलिए?', disambiguate: 'कौन से {name}: {options}?', saved: 'लिख लिया।',
-  refused_lending: 'माफ़ कीजिए, मैं लोन, ब्याज या EMI का काम नहीं करता। सिर्फ़ दुकान का खाता।',
-  refused_diagnosis: 'माफ़ कीजिए, मैं बीमारी या दवाई की सलाह नहीं दे सकता। डॉक्टर से पूछिए।',
-  reminder: 'नमस्ते {name}, आपके खाते में {amount} बाकी है। जब सुविधा हो, चुका दीजिए। धन्यवाद।',
-  reminder_no_optin: '{name} ने रिमाइंडर के लिए हाँ नहीं कहा है, इसलिए रिमाइंडर नहीं भेजूँगा।',
+  refused_lending: 'माफ़ कीजिए, लोन, ब्याज, EMI का काम नहीं करता।',
+  refused_diagnosis: 'माफ़ कीजिए, दवाई की सलाह नहीं दे सकता।',
+  reminder: 'नमस्ते {name}, {amount} बाकी। जब सुविधा हो, चुका दीजिए।',
+  reminder_no_optin: '{name} ने रिमाइंडर की अनुमति नहीं दी।',
   promise_saved: 'ठीक, {when} {amount} मिलने का नोट लिख दिया।', clarify_target: '{options}?', target_option: '{amount} वाला', target_join: 'या',
   clarify_future_credit: 'उधार अभी दिया, या बाद में देंगे?',
   confirm_q: 'सही है?', cancelled: 'ठीक है, नहीं लिखा।', nothing: 'अभी कुछ बाकी नहीं है।',
@@ -278,17 +282,17 @@ PACKS.hi.native = {
 };
 // TODO native-speaker verify (Marathi)
 PACKS.mr.native = {
+  short_due: 'बाकी {amount}.', short_advance: 'ॲडव्हान्स {amount}.', short_zero: 'हिशोब बरोबर.', tag_option: '{tag} वाला',
   stop: '.',
-  disclosure: 'नमस्कार! मी एक AI सहायक आहे, माणूस नाही. सांगा, कोणाचा हिशोब लिहायचा?',
-  entry_credit: '{name} ला {amount} उधारी', entry_payment: '{name} ने {amount} जमा केले',
-  readback: '{entries}. {name} ची नवीन बाकी {balance}. बरोबर?',
+  disclosure: 'नमस्कार, मी AI सहायक आहे. कोणाचा हिशोब लिहू?',
+  entry_credit: '{amount} उधारी', entry_payment: '{amount} जमा',
   balance_due: '{name} ची {amount} बाकी आहे.', balance_advance: '{name} ने {amount} ॲडव्हान्स दिले आहेत.', balance_zero: '{name} चा हिशोब बरोबर आहे.',
   clarify_direction: '{name} ने दिले, की {name} ला दिले?', clarify_customer: 'कोणाच्या खात्यात?', clarify_amount: 'किती रुपये?',
   clarify_repeat: 'परत सांगा?', disambiguate: 'कोणता {name}: {options}?', saved: 'लिहून घेतले.',
-  refused_lending: 'माफ करा, मी कर्ज, व्याज किंवा EMI चे काम करत नाही. फक्त दुकानाचा खाता.',
-  refused_diagnosis: 'माफ करा, मी आजार किंवा औषधाचा सल्ला देऊ शकत नाही. डॉक्टरला विचारा.',
-  reminder: 'नमस्कार {name}, तुमच्या खात्यात {amount} बाकी आहे. सोयीनुसार भरावे. धन्यवाद.',
-  reminder_no_optin: '{name} नी रिमाइंडरसाठी हो म्हटले नाही, म्हणून रिमाइंडर पाठवणार नाही.',
+  refused_lending: 'माफ करा, कर्ज, व्याज, EMI चे काम करत नाही.',
+  refused_diagnosis: 'माफ करा, औषधाचा सल्ला देऊ शकत नाही.',
+  reminder: 'नमस्कार {name}, {amount} बाकी आहे. सोयीनुसार भरावे.',
+  reminder_no_optin: '{name} नी रिमाइंडरची परवानगी दिली नाही.',
   promise_saved: 'ठीक, {when} {amount} मिळण्याची नोंद केली.', clarify_target: '{options}?', target_option: '{amount} वाला', target_join: 'की',
   clarify_future_credit: 'उधारी आता दिली, की नंतर देणार?',
   confirm_q: 'बरोबर?', cancelled: 'ठीक आहे, लिहिले नाही.', nothing: 'आता काही बाकी नाही.',
@@ -298,17 +302,17 @@ PACKS.mr.native = {
 };
 // TODO native-speaker verify (Bengali)
 PACKS.bn.native = {
+  short_due: 'বাকি {amount}।', short_advance: 'অ্যাডভান্স {amount}।', short_zero: 'হিসাব মিলে গেছে।', tag_option: '{tag} ওয়ালা',
   stop: '।',
-  disclosure: 'নমস্কার! আমি একটি AI সহায়ক, মানুষ নই। বলুন, কার হিসাব লিখব?',
-  entry_credit: '{name} কে {amount} বাকি', entry_payment: '{name} {amount} জমা দিলেন',
-  readback: '{entries}। {name} এর নতুন বাকি {balance}। ঠিক আছে?',
+  disclosure: 'নমস্কার, আমি AI সহায়ক। কার হিসাব লিখব?',
+  entry_credit: '{amount} বাকি', entry_payment: '{amount} জমা',
   balance_due: '{name} এর {amount} বাকি আছে।', balance_advance: '{name} {amount} অ্যাডভান্স দিয়েছেন।', balance_zero: '{name} এর হিসাব মিলে গেছে।',
   clarify_direction: '{name} দিয়েছেন, না {name} কে দিয়েছেন?', clarify_customer: 'কার খাতায়?', clarify_amount: 'কত টাকা?',
   clarify_repeat: 'আবার বলবেন?', disambiguate: 'কোন {name}: {options}?', saved: 'লিখে নিলাম।',
-  refused_lending: 'দুঃখিত, আমি ঋণ, সুদ বা EMI এর কাজ করি না। শুধু দোকানের খাতা।',
-  refused_diagnosis: 'দুঃখিত, আমি অসুখ বা ওষুধের পরামর্শ দিতে পারি না। ডাক্তারকে জিজ্ঞেস করুন।',
-  reminder: 'নমস্কার {name}, আপনার খাতায় {amount} বাকি আছে। সুবিধামতো শোধ করবেন। ধন্যবাদ।',
-  reminder_no_optin: '{name} রিমাইন্ডারের জন্য রাজি হননি, তাই রিমাইন্ডার পাঠাব না।',
+  refused_lending: 'দুঃখিত, ঋণ, সুদ, EMI এর কাজ করি না।',
+  refused_diagnosis: 'দুঃখিত, ওষুধের পরামর্শ দিতে পারি না।',
+  reminder: 'নমস্কার {name}, {amount} বাকি আছে। সুবিধামতো শোধ করবেন।',
+  reminder_no_optin: '{name} রিমাইন্ডারে রাজি হননি।',
   promise_saved: 'ঠিক আছে, {when} {amount} পাওয়ার কথা লিখে রাখলাম।', clarify_target: '{options}?', target_option: '{amount} টাকার টা', target_join: 'না',
   clarify_future_credit: 'বাকি এখন দিলেন, না পরে দেবেন?',
   confirm_q: 'ঠিক আছে?', cancelled: 'ঠিক আছে, লিখলাম না।', nothing: 'এখন কিছু বাকি নেই।',
@@ -332,15 +336,16 @@ UNION.all = new Set([...LIST_FIELDS.filter((f) => !SUFFIX_FIELDS.has(f)), ...DAT
 const packWords = Object.fromEntries(Object.entries(PACKS).map(([k, p]) =>
   [k, new Set([...LIST_FIELDS.flatMap((f) => p[f] || []), ...DATE_KEYS.flatMap((d) => p.dates[d])])]));
 
-// Reply language only. Ties go to Hindi (first pack).
-function detectLang(words) {
+// Reply language only. Ties go to Hindi (first pack). score = how many lexicon words that pack matched.
+function detectLangScore(words) {
   let best = 'hi', score = 0;
   for (const [k, set] of Object.entries(packWords)) {
     const s = words.filter((x) => set.has(x)).length;
     if (s > score) { best = k; score = s; }
   }
-  return best;
+  return { lang: best, score };
 }
+const detectLang = (words) => detectLangScore(words).lang;
 
 // script: 'latin' (default) or 'native'. Packs without templates (bho, mai) reply in Hindi.
 function render(lang, key, vars = {}, script = 'latin') {
@@ -376,4 +381,4 @@ function lexWord(w) {
   return c.length >= 4 ? resolve(CANON, c) : null;
 }
 
-module.exports = { PACKS, UNION, detectLang, render, dayWord, lexWord };
+module.exports = { PACKS, UNION, detectLang, detectLangScore, render, dayWord, lexWord };

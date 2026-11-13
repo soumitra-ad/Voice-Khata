@@ -1,16 +1,21 @@
 'use strict';
 // Gnani Timbre v3.0 TTS over WebSocket. The ONLY place TTS is called. Stock voices only, no cloning.
-// Every URL, header, message and event name comes from .env.
-// TODO: VERIFY FROM GNANI DOCS — none of the .env values below are confirmed.
+// Every URL, header, message and event name comes from .env (see adapters/config.js).
+// TODO: VERIFY FROM GNANI DOCS — protocol below follows docs.gnani.ai TTS Realtime (checked 2026-11-13):
+//   - key in the upgrade header; one JSON request at a time: {text, voice, model, language, audio_config}
+//   - replies: {type:"start"}, {type:"audio", data:{audio:<base64>}}..., {type:"complete"} or {type:"error"}
+//   - no documented cancel message, so barge-in closes the socket (a stale reply must never leak into the next)
+//   - observed live (npm run probe -- --tts): a reply ends with TWO 'complete' messages, the second carrying the
+//     request_id from 'start'; messages for an already-finished request_id are ignored so they cannot end the next reply
 const { createHash } = require('node:crypto');
 const WebSocket = require('ws');
+const { env, pathGet, jsonFill, langCode, authHeaders } = require('./config');
 
-const env = (k, d = '') => (process.env[k] === undefined || process.env[k] === '' ? d : process.env[k]);
-const pathGet = (obj, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
-const jsonFill = (tpl, vars) => tpl.replace(/\{(\w+)\}/g, (_, k) => JSON.stringify(String(vars[k] ?? '')).slice(1, -1));
-
-const CACHE_MAX = 200;
-const cacheKey = (text, voice, lang) => createHash('sha256').update(`${voice}\u0000${lang}\u0000${text}`).digest('hex');
+// One cache for the whole process: a phrase synthesised for one session is instant for the next.
+// The key MUST include script: the same reply in Devanagari and in Latin is different audio.
+const CACHE_MAX = 500;
+const TTS_CACHE = new Map();
+const cacheKey = (text, voice, lang, script) => createHash('sha256').update([voice, lang, script, text].join('\u0000')).digest('hex');
 
 // Tiny push->pull queue so callers can `for await` audio chunks as they stream in.
 function channel() {
@@ -30,32 +35,42 @@ function channel() {
 }
 
 class Base {
-  constructor({ lang = 'hi', voice = env('GNANI_TTS_VOICE') } = {}) {
+  constructor({ lang = 'hi', voice = env('GNANI_TTS_VOICE'), script = 'native' } = {}) {
     this.lang = lang;
     this.voice = voice;
-    this.cache = new Map();
-    this.gen = 0;
+    this.script = script;
+    this.flushGen = 0; // bumped only by flush(), so concurrent streams never cancel each other
   }
 
-  // Yields PCM16 LE mono Buffers at this.sampleRate. Cached by hash(text, voice, lang).
+  key(text) { return cacheKey(text, this.voice, this.lang, this.script); }
+
+  // Yields PCM16 LE mono Buffers at this.sampleRate. Cached by hash(text, voice, lang, script).
   async *stream(text) {
-    const key = cacheKey(text, this.voice, this.lang);
-    const hit = this.cache.get(key);
-    if (hit) { yield* hit; return; }
-    const gen = ++this.gen;
+    const key = this.key(text);
+    const hit = TTS_CACHE.get(key);
+    if (hit) { TTS_CACHE.delete(key); TTS_CACHE.set(key, hit); yield* hit; return; }
+    const gen = this.flushGen;
     const chunks = [];
     for await (const c of this.synth(text)) {
-      if (gen !== this.gen) return; // flushed: do not cache a partial utterance
+      if (gen !== this.flushGen) return; // flushed: do not cache a partial utterance
       chunks.push(c);
       yield c;
     }
-    if (gen !== this.gen) return;
-    this.cache.set(key, chunks);
-    if (this.cache.size > CACHE_MAX) this.cache.delete(this.cache.keys().next().value);
+    if (gen !== this.flushGen) return;
+    TTS_CACHE.set(key, chunks);
+    if (TTS_CACHE.size > CACHE_MAX) TTS_CACHE.delete(TTS_CACHE.keys().next().value);
+  }
+
+  // Fill the cache for phrases we will certainly say. Sequential, so it never floods the TTS socket.
+  async prewarm(texts) {
+    for (const t of texts) {
+      if (TTS_CACHE.has(this.key(t))) continue;
+      for await (const _ of this.stream(t)) { /* drain into the cache */ } // eslint-disable-line no-unused-vars
+    }
   }
 
   // Barge-in: stop the current utterance immediately.
-  flush() { this.gen++; this.cancel(); }
+  flush() { this.flushGen++; this.cancel(); }
   cancel() {}
   connect() {}
   close() {}
@@ -64,32 +79,45 @@ class Base {
 class TimbreAdapter extends Base {
   constructor(opts) {
     super(opts);
-    this.sampleRate = Number(env('GNANI_TTS_SAMPLE_RATE', '16000')); // TODO: VERIFY FROM GNANI DOCS
+    this.sampleRate = Number(env('GNANI_TTS_SAMPLE_RATE', '16000')); // TODO: VERIFY FROM GNANI DOCS (must match audio_config)
     this.ws = null;
     this.current = null;
+    this.finished = new Set(); // request_ids whose reply already ended
   }
 
   connect() {
-    if (this.ws && this.ws.readyState <= WebSocket.OPEN) return this.ready;
+    if (this.ws) return this.ready;
     const url = env('GNANI_TTS_WS_URL'); // TODO: VERIFY FROM GNANI DOCS
     if (!url) throw new Error('GNANI_TTS_WS_URL is not set. TODO: VERIFY FROM GNANI DOCS, or run with MOCK_VOICE=1');
-    const headers = {};
-    const authHeader = env('GNANI_AUTH_HEADER'); // TODO: VERIFY FROM GNANI DOCS
-    if (authHeader) headers[authHeader] = env('GNANI_AUTH_VALUE', '{key}').replace('{key}', env('GNANI_API_KEY'));
-    this.ws = new WebSocket(url, { headers });
-    this.ready = new Promise((resolve, reject) => { this.ws.once('open', resolve); this.ws.once('error', reject); });
-    this.ws.on('message', (data, isBinary) => {
+    const sock = new WebSocket(url, { headers: authHeaders() });
+    this.ws = sock;
+    this.ready = new Promise((resolve, reject) => { sock.once('open', resolve); sock.once('error', reject); });
+    this.ready.catch(() => {}); // surfaced by synth(); avoid an unhandled rejection for pre-warm
+    sock.on('message', (data, isBinary) => {
+      if (this.ws !== sock) return;
       const ch = this.current;
       if (!ch) return;
-      if (isBinary) { ch.push(Buffer.from(data)); return; } // TODO: VERIFY FROM GNANI DOCS (binary PCM vs base64 JSON)
+      if (isBinary) { ch.push(Buffer.from(data)); return; } // raw PCM, if the server ever sends binary
       let msg;
       try { msg = JSON.parse(String(data)); } catch { return; }
-      const audio = pathGet(msg, env('GNANI_TTS_AUDIO_FIELD', 'audio')); // TODO: VERIFY FROM GNANI DOCS
-      if (typeof audio === 'string') ch.push(Buffer.from(audio, 'base64'));
-      if (String(pathGet(msg, env('GNANI_TTS_EVENT_FIELD', 'type'))) === env('GNANI_TTS_END_EVENT')) { ch.close(); this.current = null; } // TODO: VERIFY FROM GNANI DOCS
+      const rid = pathGet(msg, env('GNANI_TTS_REQUEST_ID_FIELD', 'request_id')); // TODO: VERIFY FROM GNANI DOCS
+      if (rid && this.finished.has(rid)) return; // late message from a reply that already ended
+      if (rid && !ch.requestId) ch.requestId = rid;
+      const kind = String(pathGet(msg, env('GNANI_TTS_EVENT_FIELD', 'type')));  // TODO: VERIFY FROM GNANI DOCS
+      const audio = pathGet(msg, env('GNANI_TTS_AUDIO_FIELD', 'audio'));        // TODO: VERIFY FROM GNANI DOCS
+      if (typeof audio === 'string' && audio) ch.push(Buffer.from(audio, 'base64'));
+      if (kind === env('GNANI_TTS_ERROR_EVENT')) console.error('[timbre]', msg.message || 'error'); // TODO: VERIFY FROM GNANI DOCS
+      if (kind === env('GNANI_TTS_END_EVENT') || kind === env('GNANI_TTS_ERROR_EVENT')) {
+        if (ch.requestId) { this.finished.add(ch.requestId); if (this.finished.size > 100) this.finished.delete(this.finished.values().next().value); }
+        ch.close(); this.current = null;
+      }
     });
-    this.ws.on('close', () => { if (this.current) this.current.close(); this.current = null; this.ws = null; });
-    this.ws.on('error', () => {});
+    sock.on('close', () => {
+      if (this.ws !== sock) return;
+      if (this.current) this.current.close(); // a reply cut short by the server ends, it never hangs
+      this.current = null; this.ws = null;
+    });
+    sock.on('error', () => {});
     return this.ready;
   }
 
@@ -97,19 +125,23 @@ class TimbreAdapter extends Base {
     await this.connect();
     const ch = channel();
     this.current = ch;
-    const tpl = env('GNANI_TTS_REQUEST_TEMPLATE'); // TODO: VERIFY FROM GNANI DOCS, e.g. a JSON with {text} {voice} {lang}
+    const tpl = env('GNANI_TTS_REQUEST_TEMPLATE'); // TODO: VERIFY FROM GNANI DOCS
     if (!tpl) throw new Error('GNANI_TTS_REQUEST_TEMPLATE is not set. TODO: VERIFY FROM GNANI DOCS');
-    this.ws.send(jsonFill(tpl, { text, voice: this.voice, lang: this.lang }));
+    this.ws.send(jsonFill(tpl, { text, voice: this.voice, lang: langCode(this.lang) }));
     yield* ch;
   }
 
+  // Barge-in. With a documented cancel message we send it; without one we drop the socket, because the
+  // rest of the cancelled reply would otherwise arrive and be played as the start of the next reply.
   cancel() {
-    if (this.current) { this.current.close(); this.current = null; }
-    const msg = env('GNANI_TTS_CANCEL_MESSAGE'); // TODO: VERIFY FROM GNANI DOCS
-    if (msg && this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(msg);
+    if (!this.current) return;
+    this.current.close(); this.current = null;
+    const msg = env('GNANI_TTS_CANCEL_MESSAGE'); // TODO: VERIFY FROM GNANI DOCS (none documented)
+    if (msg && this.ws && this.ws.readyState === WebSocket.OPEN) { this.ws.send(msg); return; }
+    if (this.ws) { const old = this.ws; this.ws = null; old.close(); }
   }
 
-  close() { if (this.ws) this.ws.close(); }
+  close() { if (this.ws) { const old = this.ws; this.ws = null; old.close(); } }
 }
 
 // MOCK_VOICE=1: a short beep, streamed in 20 ms chunks. No network.
@@ -132,4 +164,4 @@ class MockTimbre extends Base {
 
 const createTimbre = (opts) => (process.env.MOCK_VOICE === '0' ? new TimbreAdapter(opts) : new MockTimbre(opts));
 
-module.exports = { createTimbre, TimbreAdapter, MockTimbre, cacheKey };
+module.exports = { createTimbre, TimbreAdapter, MockTimbre, cacheKey, TTS_CACHE };

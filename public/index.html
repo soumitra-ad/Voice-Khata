@@ -33,7 +33,14 @@
   .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .adv { color: var(--ok); }
   .small { font-size: 13px; color: var(--muted); }
-  #purge { margin-top: 24px; background: none; border: 1px solid var(--accent); color: var(--accent); border-radius: 10px; padding: 8px 12px; }
+  #purge { background: none; border: 1px solid var(--accent); color: var(--accent); border-radius: 10px; padding: 8px 12px; }
+  #seed, #loadtx { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+  #typed { flex: 1; min-width: 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font: inherit; }
+  #sendtext { padding: 9px 14px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; }
+  #typerow { margin-top: 10px; }
+  #transcripts li { display: block; padding: 6px 0; }
+  #transcripts .said { display: block; font-size: 14px; color: var(--fg); }
+  details { margin-top: 24px; }
   #start { position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg); z-index: 9; }
   #start button { font-size: 22px; padding: 18px 28px; border-radius: 16px; border: 0; background: var(--accent); color: #fff; }
   #note { color: var(--accent); font-size: 13px; min-height: 1em; }
@@ -59,6 +66,10 @@
   <button id="ptt" disabled>दबाकर बोलें · Hold to talk</button>
   <div id="meter"><i></i></div>
   <div id="frames" class="small">mic frames 0 · sent 0</div>
+  <div class="row" id="typerow">
+    <input id="typed" placeholder="या टाइप करें · or type a line" autocomplete="off" maxlength="300">
+    <button id="sendtext">भेजें</button>
+  </div>
   <div id="note"></div>
   <h2>Khata <span id="total" class="small"></span></h2>
   <ul id="customers"></ul>
@@ -66,7 +77,15 @@
   <ul id="entries"></ul>
   <h2>Promises</h2>
   <ul id="promises"></ul>
-  <button id="purge">Delete all demo data</button>
+  <div class="row" style="margin-top:24px;gap:8px;flex-wrap:wrap">
+    <button id="seed">Restore demo data</button>
+    <button id="purge">Delete all demo data</button>
+  </div>
+  <details>
+    <summary class="small">Transcripts (encrypted at rest, decrypted for this view only)</summary>
+    <ul id="transcripts"></ul>
+    <button id="loadtx" class="small">Load transcripts</button>
+  </details>
   <p class="small">AI assistant. Synthetic demo data only. Transcripts are encrypted at rest.</p>
 </main>
 <script src="app.js"></script>

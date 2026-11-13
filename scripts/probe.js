@@ -1,5 +1,6 @@
 'use strict';
-// npm run probe -- ./sample.wav [--lang hi]
+// npm run probe -- ./sample.wav [--lang hi]      Prisma STT
+// npm run probe -- --tts "नमस्ते" [--lang hi]       Timbre TTS -> tts-probe.wav
 // Streams a WAV to Gnani Prisma using .env config and prints EVERY raw WebSocket event verbatim,
 // then the final transcript and which script it came back in (digits / Devanagari / Bengali / Latin).
 // Always uses the REAL adapter, whatever MOCK_VOICE says.
@@ -7,9 +8,47 @@ try { process.loadEnvFile(); } catch { /* use the shell environment */ }
 const fs = require('node:fs');
 const { PrismaAdapter } = require('../adapters/prisma');
 
-const file = process.argv[2];
-const lang = (process.argv.includes('--lang') && process.argv[process.argv.indexOf('--lang') + 1]) || 'hi';
-if (!file) { console.error('usage: npm run probe -- ./sample.wav [--lang hi|mr|bn|en]'); process.exit(2); }
+const arg = (name) => (process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined);
+const lang = arg('--lang') || 'hi';
+const ttsText = arg('--tts');
+const file = ttsText === undefined ? process.argv[2] : null;
+if (!file && ttsText === undefined) { console.error('usage: npm run probe -- ./sample.wav [--lang hi|mr|bn|en]\n       npm run probe -- --tts "text" [--lang hi]'); process.exit(2); }
+if (!process.env.GNANI_API_KEY) { console.error('GNANI_API_KEY is empty in .env'); process.exit(2); }
+
+if (ttsText !== undefined) {
+  // Timbre: stream one reply, print every raw message (audio truncated), save playable WAV.
+  const { TimbreAdapter } = require('../adapters/timbre');
+  const WebSocket = require('ws');
+  const t = new TimbreAdapter({ lang, script: 'native' });
+  const t0 = Date.now();
+  const origOn = WebSocket.prototype.on;
+  WebSocket.prototype.on = function (ev, fn) { // tap raw messages without changing the adapter
+    if (ev === 'message') return origOn.call(this, ev, (d, bin) => {
+      const txt = bin ? `binary ${d.length} bytes` : String(d).replace(/"audio":"[^"]{40,}"/, (m) => m.slice(0, 50) + '…"');
+      console.log(`[+${String(Date.now() - t0).padStart(6)} ms] RAW ${txt}`);
+      fn(d, bin);
+    });
+    return origOn.call(this, ev, fn);
+  };
+  (async () => {
+    console.log(`# url: ${process.env.GNANI_TTS_WS_URL}  voice: ${t.voice}  lang: ${lang}`);
+    const chunks = [];
+    let first = null;
+    try {
+      for await (const c of t.stream(ttsText)) { if (first === null) first = Date.now() - t0; chunks.push(c); }
+    } catch (e) { console.error('ERROR', e.message); }
+    t.close();
+    const pcm = Buffer.concat(chunks);
+    const hdr = Buffer.alloc(44);
+    hdr.write('RIFF', 0); hdr.writeUInt32LE(36 + pcm.length, 4); hdr.write('WAVE', 8); hdr.write('fmt ', 12);
+    hdr.writeUInt32LE(16, 16); hdr.writeUInt16LE(1, 20); hdr.writeUInt16LE(1, 22); hdr.writeUInt32LE(t.sampleRate, 24);
+    hdr.writeUInt32LE(t.sampleRate * 2, 28); hdr.writeUInt16LE(2, 32); hdr.writeUInt16LE(16, 34); hdr.write('data', 36); hdr.writeUInt32LE(pcm.length, 40);
+    fs.writeFileSync('tts-probe.wav', Buffer.concat([hdr, pcm]));
+    console.log(`\n# first audio after ${first} ms; ${chunks.length} chunks, ${(pcm.length / (t.sampleRate * 2)).toFixed(2)} s of audio -> tts-probe.wav`);
+    setTimeout(() => process.exit(0), 100);
+  })();
+  return;
+}
 
 // Minimal WAV reader: 16-bit PCM or 32-bit float, any rate/channels -> 16 kHz mono Int16.
 function readWav(path) {

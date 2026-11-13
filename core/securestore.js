@@ -58,6 +58,16 @@ class SecureStore {
     return r ? decrypt({ ciphertext: r.ciphertext, iv: r.iv, authTag: r.auth_tag }, this.key) : null;
   }
 
+  // Newest first, decrypted for a local audit view. A row that fails to decrypt is reported, not thrown.
+  list(limit = 50) {
+    const n = Math.max(1, Math.min(200, Number(limit) || 50));
+    return this.db.prepare('SELECT id, created_at, ciphertext, iv, auth_tag FROM transcripts ORDER BY id DESC LIMIT ?').all(n).map((r) => {
+      let body = null;
+      try { body = JSON.parse(decrypt({ ciphertext: r.ciphertext, iv: r.iv, authTag: r.auth_tag }, this.key)); } catch { body = null; }
+      return { id: r.id, at: r.created_at, role: body && body.role, text: body ? body.text : null };
+    });
+  }
+
   count() { return Number(this.db.prepare('SELECT COUNT(*) AS n FROM transcripts').get().n); }
   purge() { purge(this.db); }
 }

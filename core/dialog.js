@@ -94,12 +94,17 @@ function answerPending(pending, text, ctx) {
   return null;
 }
 
-// Short tag that tells candidates apart: an alias or name word the others do not share.
-function candidateLabel(c, all, customers) {
+// Spoken label that tells candidates apart: "<tag> wala", where tag is an alias word the others do not share.
+// Native script prefers a native-script alias, so native mode never mixes scripts.
+function candidateLabel(c, all, customers, lang = 'hi', script = 'latin') {
   const sets = all.map((x) => keySet(fullCustomer(x, customers)));
   const shared = sets.reduce((a, s) => new Set([...a].filter((k) => s.has(k))));
   const full = fullCustomer(c, customers);
-  return aliasList(full).find((n) => tokenize(n).some((t) => !shared.has(canonicalKey(t.t)))) || full.name;
+  const tags = aliasList(full).map((n) => tokenize(n).filter((t) => !U.wala.has(lexWord(t.t) || t.t)).map((t) => t.raw).join(' '))
+    .filter((tag) => tag && tokenize(tag).some((t) => !shared.has(canonicalKey(t.t))));
+  const native = tags.find((t) => /[^\x00-\x7F]/.test(t));
+  const tag = (script === 'native' && native) || tags.find((t) => !/[^\x00-\x7F]/.test(t)) || native;
+  return tag ? render(lang, 'tag_option', { tag }, script) : full.name;
 }
 
 /**
@@ -109,7 +114,7 @@ function candidateLabel(c, all, customers) {
 function questionFor(intent, { lang, script = 'latin', customers = [], lastIntent = null, nameOf = (c) => c.name }) {
   const T = (key, vars) => render(lang, key, vars, script);
   if (intent.intent === 'disambiguate') {
-    const labels = intent.candidates.map((c) => candidateLabel(c, intent.candidates, customers));
+    const labels = intent.candidates.map((c) => candidateLabel(c, intent.candidates, customers, lang, script));
     const name = intent.candidates.length ? nameOf(fullCustomer(intent.candidates[0], customers)).split(' ')[0] : '';
     return T('disambiguate', { name, options: labels.join(` ${T('target_join')} `) });
   }

@@ -4,3 +4,6 @@ node_modules/
 *.db-journal
 *.db-wal
 *.db-shm
+*.wav
+*.m4a
+.DS_Store

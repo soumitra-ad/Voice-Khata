@@ -4,15 +4,49 @@ const $ = (id) => document.getElementById(id);
 const RING_FRAMES = 18;      // 18 x 20 ms = 360 ms pre-roll (>= 350 ms)
 const BARGE_FRAMES = 9;      // 9 x 20 ms = 180 ms of speech over agent audio
 const BARGE_RMS = 0.02;
+const HIGH_WATER = 32 * 1024; // ws.bufferedAmount above this (~1 s of audio) = network is behind: queue locally
+const MAX_BACKLOG = 100;      // 2 s of queued frames; beyond that the oldest are dropped
 
-let ws, ctx, talking = false;
+let ws, ctx, mic = null, talking = false;
+const backlog = [];
+let dropped = 0;
 const ring = [];
 let sources = [], nextT = 0, ttsRate = 16000, firstChunk = false, leftover = null, endTimer = null, loud = 0;
 let customers = new Map();
 let mock = false, captured = 0, sentFrames = 0;
 const MOCK_HUD = 'TTFB: MOCK — not a real measurement';
 
-const send = (o) => { if (ws && ws.readyState === 1) ws.send(typeof o === 'string' || o instanceof ArrayBuffer ? o : JSON.stringify(o)); };
+const send = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+
+// UI writes are batched into one requestAnimationFrame: partials and mic levels arrive far faster than paints.
+const ui = { partial: null, level: 0, dirty: false };
+function paint() {
+  ui.dirty = false;
+  $('meter').firstChild.style.width = Math.min(100, ui.level * 400) + '%';
+  $('frames').textContent = 'mic frames ' + captured + ' · sent ' + sentFrames + (dropped ? ' · dropped ' + dropped : '');
+  if (ui.partial !== null) { $('partial').textContent = ui.partial; ui.partial = null; }
+}
+const schedule = () => { if (!ui.dirty) { ui.dirty = true; requestAnimationFrame(paint); } };
+
+// Frame buffers belong to the worklet's pool: hand each one back (transferred, no copy) once we are done with it.
+const giveBack = (buf) => { if (mic) mic.port.postMessage(buf, [buf]); };
+function sendFrame(buf) {
+  if (!ws || ws.readyState !== 1) { giveBack(buf); return; }
+  if (backlog.length || ws.bufferedAmount > HIGH_WATER) {
+    backlog.push(buf);
+    if (backlog.length > MAX_BACKLOG) { giveBack(backlog.shift()); dropped++; }
+    return drain();
+  }
+  ws.send(new Uint8Array(buf, 0, 640)); // the send copies the bytes, so the buffer can go straight back
+  sentFrames++;
+  giveBack(buf);
+}
+function drain(force) {
+  while (backlog.length && ws && ws.readyState === 1 && (force || ws.bufferedAmount <= HIGH_WATER)) {
+    const b = backlog.shift();
+    ws.send(new Uint8Array(b, 0, 640)); sentFrames++; giveBack(b);
+  }
+}
 const rupees = (p) => '₹' + (Math.abs(p) / 100).toLocaleString('en-IN');
 const note = (t) => { $('note').textContent = t; };
 
@@ -31,7 +65,7 @@ async function start() {
     const media = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
-    const node = new AudioWorkletNode(ctx, 'mic');
+    const node = mic = new AudioWorkletNode(ctx, 'mic');
     node.onprocessorerror = (e) => console.error('[capture] worklet error', e);
     const mute = ctx.createGain(); mute.gain.value = 0; // keeps the worklet pulled without echoing the mic
     ctx.createMediaStreamSource(media).connect(node).connect(mute).connect(ctx.destination);
@@ -45,11 +79,12 @@ async function start() {
   connect();
 }
 
-function onFrame({ pcm, rms }) {
-  $('meter').firstChild.style.width = Math.min(100, rms * 400) + '%';
-  if (++captured % 10 === 0) $('frames').textContent = 'mic frames ' + captured + ' · sent ' + sentFrames;
-  if (!talking) { ring.push(pcm); if (ring.length > RING_FRAMES) ring.shift(); return; }
-  send(pcm); sentFrames++;
+function onFrame(buf) {
+  const rms = new Int16Array(buf, 640, 1)[0] / 32767; // the worklet packs RMS after the 320 samples
+  captured++; ui.level = rms; schedule();
+  // Not holding PTT: keep only the pre-roll ring. Nothing is sent.
+  if (!talking) { ring.push(buf); if (ring.length > RING_FRAMES) giveBack(ring.shift()); return; }
+  sendFrame(buf);
   // Barge-in on >180 ms of speech while the agent is audible. Only while PTT is held, so agent echo cannot trigger it.
   if (sources.length && rms > BARGE_RMS) { if (++loud >= BARGE_FRAMES) { stopAudio(); send({ type: 'barge_in' }); loud = 0; } } else loud = 0;
 }
@@ -60,14 +95,15 @@ function pttDown(e) {
   talking = true; loud = 0;
   $('ptt').classList.add('on');
   send({ type: 'ptt_down' });
-  for (const f of ring.splice(0)) { send(f); sentFrames++; } // pre-roll: the first word is never clipped
+  for (const f of ring.splice(0)) sendFrame(f); // pre-roll: the first word is never clipped
 }
 
 function pttUp(e) {
   if (e) e.preventDefault();
   if (!talking) return;
-  talking = false;
+  talking = false; // stops sending at once: later frames go to the pre-roll ring only
   $('ptt').classList.remove('on');
+  drain(true); // audio captured before release still goes, ahead of the endpoint
   send({ type: 'ptt_up', t: performance.now() }); // release IS the endpoint
 }
 
@@ -130,8 +166,9 @@ function connect() {
         if (mock) $('hud').textContent = MOCK_HUD;
         note(''); break;
       case 'state': $('state').textContent = m.state; break;
-      case 'partial': $('partial').textContent = m.text; break;
-      case 'final': $('partial').textContent = ''; line('u', m.text); break;
+      case 'lang': $('lang').value = m.lang; break; // replies now follow the language actually spoken
+      case 'partial': ui.partial = m.text; schedule(); break;
+      case 'final': ui.partial = ''; schedule(); line('u', m.text); break;
       case 'agent': line('a', m.text); break;
       case 'tts_start': ttsRate = m.sampleRate; firstChunk = true; leftover = null; clearTimeout(endTimer); break;
       case 'tts_end': endTimer = setTimeout(() => send({ type: 'play_end', gen: m.gen }), Math.max(0, (nextT - ctx.currentTime) * 1000)); break;
@@ -152,8 +189,43 @@ ptt.addEventListener('contextmenu', (e) => e.preventDefault()); // Android long-
 addEventListener('keydown', (e) => { if (e.code === 'Space' && !e.repeat && e.target === document.body) pttDown(e); });
 addEventListener('keyup', (e) => { if (e.code === 'Space' && e.target === document.body) pttUp(e); });
 $('lang').onchange = () => send({ type: 'lang', lang: $('lang').value });
+
+// Typed fallback: the same server path as a final transcript, so the loop still demos without a mic.
+function sendText() {
+  const el = $('typed'), t = el.value.trim();
+  if (!t) return;
+  if (!ws || ws.readyState !== 1) { note('Not connected.'); return; }
+  send({ type: 'text', text: t });
+  el.value = '';
+}
+$('sendtext').onclick = sendText;
+$('typed').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendText(); } });
+
 $('purge').onclick = async () => {
-  if (!confirm('Delete ALL demo data (ledger and transcripts)? This cannot be undone.')) return;
+  if (!confirm('Delete ALL demo data — customers, ledger and transcripts? This cannot be undone.')) return;
   const r = await fetch('/purge', { method: 'POST', headers: { 'x-khata': '1' } });
-  note(r.ok ? 'All demo data deleted.' : 'Delete failed.');
+  note(r.ok ? 'All demo data deleted. Restore demo data to run the script again.' : 'Delete failed.');
+};
+
+$('seed').onclick = async () => {
+  const r = await fetch('/seed', { method: 'POST', headers: { 'x-khata': '1' } });
+  note(r.ok ? 'Demo customers restored.' : 'Restore failed.');
+};
+
+$('loadtx').onclick = async () => {
+  const r = await fetch('/transcripts', { headers: { 'x-khata': '1' } });
+  if (!r.ok) { note('Could not load transcripts.'); return; }
+  const { transcripts } = await r.json();
+  $('transcripts').replaceChildren(...transcripts.map((t) => {
+    const li = document.createElement('li');
+    const head = document.createElement('span');
+    head.className = 'small';
+    head.textContent = (t.role === 'user' ? 'you' : 'agent') + ' · ' + (t.at || '');
+    const said = document.createElement('span');
+    said.className = 'said';
+    said.textContent = t.text || '(could not be decrypted with this key)';
+    li.append(head, said);
+    return li;
+  }));
+  if (!transcripts.length) note('No transcripts stored yet.');
 };

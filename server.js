@@ -33,15 +33,28 @@ if (!key) {
 const ledger = openLedger(process.env.LEDGER_DB || './khata.db');
 const store = new SecureStore(ledger.db, key);
 
+// Synthetic demo roster (synthetic customers only). Native-script alias first = display name; Latin kept for matching.
+// Two Rameshes on purpose: they force a disambiguate question answered with a short tag.
+const DEMO_ROSTER = require('./data/demo-roster.json');
+function seedDemo() {
+  if (ledger.findCustomers('').length) return;
+  for (const c of DEMO_ROSTER) ledger.addCustomer(c.name, c.aliases);
+}
+seedDemo();
+
+// Fixed replies worth synthesising before anyone needs them (+ the disclosure, cached when first spoken).
+const PREWARM_KEYS = ['confirm_q', 'saved', 'cancelled', 'nothing', 'clarify_customer', 'clarify_amount', 'clarify_repeat', 'undone', 'error', 'short_zero'];
+
 // Every user-facing string comes from core/langpacks.js in the configured script.
 const T = (s, key, vars) => render(s.lang, key, vars, SCRIPT);
 const W = (s, paise) => toWords(paise, s.lang, SCRIPT);
-const nativeAlias = (c) => c && (c.aliases || []).find((x) => /[^\x00-\x7F]/.test(x));
+const isNativeText = (x) => /[^\x00-\x7F]/.test(x);
+const nativeAlias = (c) => c && (c.aliases || []).find(isNativeText);
 // Name to speak/show: the original-script name in native mode when we have one.
 function nm(c) {
   if (!c || SCRIPT !== 'native') return c ? c.name : '';
   if (c.display) return c.display;
-  const row = c.id && ledger.findCustomers('').find((x) => x.id === c.id);
+  const row = c.id && ledger.customerById(c.id);
   return nativeAlias(row) || c.name;
 }
 const nmById = (id) => nm(ledger.findCustomers('').find((c) => c.id === id));
@@ -65,7 +78,7 @@ const ensureCustomer = (c) => findCustomerId(c) || ledger.addCustomer(c.name, c.
 
 function snapshot() {
   const customers = ledger.findCustomers('').map((c) => ({
-    id: c.id, name: c.name, display: c.aliases.find((a) => /[^\x00-\x7F]/.test(a)) || c.name, balancePaise: ledger.balancePaise(c.id),
+    id: c.id, name: c.name, display: c.aliases.filter(isNativeText).join(' · ') || c.name, balancePaise: ledger.balancePaise(c.id),
   }));
   const entries = ledger.db.prepare(`SELECT e.id, e.customer_id, e.direction, e.amount_paise, e.entry_date FROM entries e
     WHERE e.undone = 0 ORDER BY e.id DESC LIMIT 20`).all().map((r) => ({
@@ -90,7 +103,7 @@ function newSession(ws) {
     lastCustomer: null,
     openPromise: null,
     playQueue: [],         // agent utterances not yet spoken (barge-in clears it)
-    speakGen: 0, speaking: '', streaming: false, speculative: null,
+    speakGen: 0, speaking: '', streaming: false, speculative: null, speakTimer: null,
     metrics: { turn: null, ttfb: [] },
     lastTranscriptId: null,
   };
@@ -100,9 +113,10 @@ const send = (s, obj) => { if (s.ws.readyState === 1) s.ws.send(JSON.stringify(o
 const setState = (s, state) => { s.state = state; send(s, { type: 'state', state }); };
 const mark = (s, k) => { if (s.metrics.turn && s.metrics.turn[k] == null) s.metrics.turn[k] = Date.now() - s.metrics.turn.t0; };
 
+// Called on connect, before any utterance: both Gnani sockets are warm when the user first speaks.
 function wireAdapters(s) {
   s.prisma = createPrisma({ lang: s.lang });
-  s.timbre = createTimbre({ lang: s.lang });
+  s.timbre = createTimbre({ lang: s.lang, script: SCRIPT });
   s.prisma.on('partial', (text) => onPartial(s, text));
   s.prisma.on('final', (text) => onFinal(s, text));
   s.prisma.on('error', (e) => console.error('[prisma]', e.message));
@@ -111,35 +125,66 @@ function wireAdapters(s) {
   try { Promise.resolve(s.timbre.connect()).catch((e) => console.error('[timbre]', e.message)); } catch (e) { console.error('[timbre]', e.message); }
 }
 
+// Fill the shared TTS cache on one warm connection per (language, script), reused by every session: a socket
+// per session here would multiply Gnani connections for no benefit.
+const PREWARM = new Map();
+function prewarmTts(lang) {
+  const k = `${lang}|${SCRIPT}`;
+  let inst = PREWARM.get(k);
+  if (!inst) {
+    inst = createTimbre({ lang, script: SCRIPT });
+    PREWARM.set(k, inst);
+    try { Promise.resolve(inst.connect()).catch(() => {}); } catch { /* mock has no socket */ }
+  }
+  if (inst.prewarming) return; // already filling the cache; streams on one socket must not interleave
+  inst.prewarming = inst.prewarm(PREWARM_KEYS.map((key) => render(lang, key, {}, SCRIPT)))
+    .catch((e) => console.error('[timbre prewarm]', e.message))
+    .finally(() => { inst.prewarming = null; });
+}
+
 // ---------- speaking ----------
 // s.speaking = text the user can still HEAR: set at tts_start, cleared by the client's play_end (same gen) or barge-in.
-async function speak(s, text) {
-  s.playQueue.push(text);
+// A reply may be an array of segments: each is synthesised (and cached) separately, so a cached fixed
+// segment (the 'saved' template) starts playing at once while the variable part is still being synthesised.
+async function speak(s, reply) {
+  s.playQueue.push([].concat(reply));
   if (s.streaming) return; // queued behind the current utterance
   s.streaming = true;
   while (s.playQueue.length) {
-    const t = s.playQueue.shift();
+    const segs = s.playQueue.shift(), t = segs.join(' ');
     const gen = ++s.speakGen;
+    let sentBytes = 0;
     s.speaking = t;
     setState(s, 'SPEAKING');
     store.put(JSON.stringify({ role: 'agent', text: t, at: new Date().toISOString() }));
     send(s, { type: 'agent', text: t });
     send(s, { type: 'tts_start', gen, sampleRate: s.timbre.sampleRate });
     try {
-      for await (const chunk of s.timbre.stream(t)) {
+      for (const seg of segs) {
+        for await (const chunk of s.timbre.stream(seg)) {
+          if (gen !== s.speakGen) break;
+          mark(s, 'tts_first_byte');
+          sentBytes += chunk.length;
+          if (s.ws.readyState === 1) s.ws.send(chunk);
+        }
         if (gen !== s.speakGen) break;
-        mark(s, 'tts_first_byte');
-        if (s.ws.readyState === 1) s.ws.send(chunk);
       }
     } catch (e) { console.error('[timbre]', e.message); }
     if (gen !== s.speakGen) break; // barged in
     send(s, { type: 'tts_end', gen });
+    // Watchdog: if the browser never reports play_end (no audio decoded, throttled tab, a TTS error), the
+    // session must not stay in SPEAKING forever. 16 kHz PCM16 mono = 32 bytes per millisecond.
+    clearTimeout(s.speakTimer);
+    s.speakTimer = setTimeout(() => {
+      if (s.state === 'SPEAKING' && s.speakGen === gen) { s.speaking = ''; setState(s, 'IDLE'); }
+    }, Math.max(3000, Math.round(sentBytes / 32) + 2000));
   }
   s.streaming = false;
 }
 
 function bargeIn(s, why) {
   if (!s.speaking) return;
+  clearTimeout(s.speakTimer);
   s.speakGen++;
   s.playQueue = [];
   s.speaking = '';
@@ -154,7 +199,9 @@ function onPartial(s, text) {
   const toks = tokenize(text).map((t) => t.t).filter((t) => /\p{L}|\d/u.test(t));
   // Self-echo guard: a partial made only of words the agent is currently saying is not barge-in.
   const echo = s.speaking && toks.every((t) => tokenize(s.speaking).some((x) => x.t === t));
-  if (toks.length >= 1 && !echo) bargeIn(s, 'partial');
+  // Two words, not one: a single misheard token (noise, a cough) must not cut the agent off mid-sentence.
+  // A genuine single-word interruption ("ruko") is caught by the client's 180 ms audio detector instead.
+  if (toks.length >= 2 && !echo) bargeIn(s, 'partial');
   // Speculative parse: no side effects, reused if the final matches.
   try { s.speculative = { text, intent: parse(text, ctxFor(s)) }; } catch { s.speculative = null; }
 }
@@ -190,22 +237,26 @@ function interpret(s, text) {
   return spec || parse(text, ctx);
 }
 
+// Compact read-back: per customer "<name>: <entry_credit/entry_payment...>. <short_due>", then 'confirm_q'.
 function readback(s) {
-  const lang = s.lang, t = today();
-  const parts = s.pendingEntries.map((e) => {
-    const phrase = T(s, e.direction === 'credit' ? 'entry_credit' : 'entry_payment', { name: nm(e.customer), amount: W(s, e.paise) });
-    return e.date === addDays(t, -1) ? `${T(s, 'yesterday')} ${phrase}` : phrase;
-  });
-  const byCustomer = new Map();
-  for (const e of s.pendingEntries) byCustomer.set(e.customer.name, e.customer);
-  const balances = [...byCustomer.values()].map((c) => {
-    const id = findCustomerId(c);
-    const mine = s.pendingEntries.filter((e) => e.customer.name === c.name);
+  const t = today(), groups = new Map();
+  for (const e of s.pendingEntries) {
+    const k = e.customer.id || e.customer.name;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(e);
+  }
+  const segs = [...groups.values()].map((mine) => {
+    const c = mine[0].customer, id = findCustomerId(c);
+    const parts = mine.map((e) => {
+      const p = T(s, e.direction === 'credit' ? 'entry_credit' : 'entry_payment', { amount: W(s, e.paise) });
+      return e.date === addDays(t, -1) ? `${T(s, 'yesterday')} ${p}` : p;
+    });
     const prov = id ? ledger.provisionalBalance(id, mine.map((e) => ({ customerId: id, direction: e.direction, paise: e.paise })))
       : mine.reduce((a, e) => a + signed(e), 0);
-    return speakBalance(prov, lang, nm(c), SCRIPT);
+    const bal = T(s, prov > 0 ? 'short_due' : prov < 0 ? 'short_advance' : 'short_zero', { amount: W(s, Math.abs(prov)) });
+    return `${nm(c)}: ${parts.join(', ')}${T(s, 'stop')} ${bal}`;
   });
-  return [parts.join(', ') + T(s, 'stop'), balances.join(' '), T(s, 'confirm_q')].join(' ');
+  return [...segs, T(s, 'confirm_q')];
 }
 
 function commit(s) {
@@ -213,18 +264,25 @@ function commit(s) {
   const ids = ledger.addEntries(rows, { transcriptId: s.lastTranscriptId }); // one atomic transaction
   for (const p of s.pendingPromises) ledger.addPromise({ customerId: ensureCustomer(p.customer), paise: p.paise, dueOn: p.due_on }, { transcriptId: s.lastTranscriptId });
   mark(s, 'commit');
-  s.lastCommit = { ids, rows };
+  s.lastCommit = { ids };
   s.lastCustomer = { id: rows[rows.length - 1].customerId, name: s.pendingEntries[s.pendingEntries.length - 1].customer.name };
   s.lastIntent = { ...s.lastIntent, entries: s.pendingEntries.map((e, i) => ({ ...e, customer: { ...e.customer, id: rows[i].customerId } })) };
   const names = [...new Set(rows.map((r) => r.customerId))];
   s.pendingEntries = [];
   s.pendingPromises = [];
   broadcastLedger();
-  return [T(s, 'saved'), ...names.map((id) => balanceLine(s, id))].join(' ');
+  return [T(s, 'saved'), ...names.map((id) => balanceLine(s, id))];
 }
 
 function handle(s, text) {
   const intent = interpret(s, text);
+  // Reply language follows the speaker when detection is confident; parsing always uses the union lexicon.
+  if (intent.replyLang && LANGS.has(intent.replyLang) && intent.replyLang !== s.lang) {
+    s.lang = intent.replyLang;
+    s.prisma.lang = s.lang;
+    s.timbre.lang = s.lang;
+    send(s, { type: 'lang', lang: s.lang });
+  }
   const lang = s.lang;
   send(s, { type: 'intent', intent: intent.intent });
   if (intent.customer && intent.customer.name) s.lastCustomer = { ...intent.customer, id: findCustomerId(intent.customer) };
@@ -262,7 +320,7 @@ function handle(s, text) {
       s.lastIntent = intent.patched;
       broadcastLedger();
       const cid = ledger.db.prepare('SELECT customer_id FROM entries WHERE id = ?').get(s.lastCommit.ids[idxs[0]]).customer_id;
-      return [T(s, 'saved'), balanceLine(s, cid)].join(' ');
+      return [T(s, 'saved'), balanceLine(s, cid)];
     }
 
     case 'query_balance': {
@@ -308,7 +366,7 @@ function handle(s, text) {
       mark(s, 'commit');
       s.openPromise = null;
       broadcastLedger();
-      return [T(s, 'saved'), balanceLine(s, p.customer.id, p.customer)].join(' ');
+      return [T(s, 'saved'), balanceLine(s, p.customer.id, p.customer)];
     }
 
     case 'clarify':
@@ -339,14 +397,44 @@ const app = express();
 app.disable('x-powered-by');
 app.use(express.static(path.join(__dirname, 'public')));
 
-// "Delete all demo data": transcripts and ledger. Custom header blocks cross-site form posts.
+// Demo control endpoints. A custom header blocks cross-site form posts; the Origin check blocks a cross-site
+// fetch from a tab that is pointed at this server during judging.
+function guarded(req, res) {
+  if (req.get('x-khata') !== '1') { res.status(403).json({ ok: false }); return false; }
+  const origin = req.get('origin');
+  if (origin) {
+    try { if (new URL(origin).host !== req.get('host')) { res.status(403).json({ ok: false }); return false; } }
+    catch { res.status(403).json({ ok: false }); return false; }
+  }
+  return true;
+}
+
+function resetSessions() {
+  for (const s of sessions) Object.assign(s, { lastIntent: null, pendingEntries: [], pendingPromises: [], lastCommit: null, pendingQuestion: null, lastCustomer: null, openPromise: null });
+}
+
+// Delete ALL demo data: transcripts, customers, entries, promises, audit. No reseed, so the wipe is real.
 app.post('/purge', (req, res) => {
-  if (req.get('x-khata') !== '1') return res.status(403).json({ ok: false });
+  if (!guarded(req, res)) return;
   purgeTranscripts(ledger.db);
   ledger.purge();
-  for (const s of sessions) Object.assign(s, { lastIntent: null, pendingEntries: [], pendingPromises: [], lastCommit: null, pendingQuestion: null, lastCustomer: null, openPromise: null });
+  resetSessions();
   broadcastLedger();
-  res.json({ ok: true });
+  res.json({ ok: true, customers: 0 });
+});
+
+// Put the synthetic roster back after a purge (or at the start of a fresh judging run).
+app.post('/seed', (req, res) => {
+  if (!guarded(req, res)) return;
+  seedDemo();
+  broadcastLedger();
+  res.json({ ok: true, customers: ledger.findCustomers('').length });
+});
+
+// Local audit view: transcripts are encrypted at rest, decrypted only here, server-side.
+app.get('/transcripts', (req, res) => {
+  if (!guarded(req, res)) return;
+  res.json({ ok: true, transcripts: store.list(50) });
 });
 
 const server = http.createServer(app);
@@ -355,23 +443,24 @@ const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 1 << 20 });
 wss.on('connection', (ws) => {
   const s = newSession(ws);
   sessions.add(s);
+  wireAdapters(s); // pre-warm Prisma + Timbre now, not at the first utterance
   ws.on('message', (data, isBinary) => {
     if (isBinary) { if (s.state === 'LISTENING') s.prisma.sendPcm(data); return; }
     let m;
     try { m = JSON.parse(String(data)); } catch { return; }
     switch (m.type) {
       case 'hello':
-        if (LANGS.has(m.lang)) s.lang = m.lang;
-        wireAdapters(s);
+        if (LANGS.has(m.lang)) s.lang = s.prisma.lang = s.timbre.lang = m.lang;
         send(s, { type: 'session', id: s.id, lang: s.lang, mock: MOCK, script: SCRIPT });
         send(s, snapshot());
-        speak(s, aiDisclosure(s.lang, SCRIPT).safeReply); // the literal first agent turn, before any task
+        // The literal first agent turn, before any task. Speaking it caches it; then pre-synthesise the rest.
+        speak(s, aiDisclosure(s.lang, SCRIPT).safeReply).then(() => prewarmTts(s.lang));
         break;
       case 'lang':
         if (!LANGS.has(m.lang) || m.lang === s.lang) break;
         s.lang = m.lang;
         s.prisma.lang = s.timbre.lang = m.lang;
-        speak(s, aiDisclosure(s.lang, SCRIPT).safeReply); // new language: disclose again in it
+        speak(s, aiDisclosure(s.lang, SCRIPT).safeReply).then(() => prewarmTts(s.lang)); // new language: disclose again in it
         break;
       case 'ptt_down':
         s.metrics.turn = { t0: null, speech_end: null };
@@ -403,9 +492,15 @@ wss.on('connection', (ws) => {
       }
       case 'play_end':
         if (m.gen !== s.speakGen) break; // a stale utterance finished
+        clearTimeout(s.speakTimer);
         s.speaking = '';
         if (s.state === 'SPEAKING') setState(s, 'IDLE');
         break;
+      case 'text': { // typed fallback: identical to a final transcript, so a demo survives a dead mic
+        const t = typeof m.text === 'string' ? m.text.trim().slice(0, 300) : '';
+        if (t) onFinal(s, t);
+        break;
+      }
       default:
     }
   });
@@ -416,4 +511,4 @@ wss.on('connection', (ws) => {
   });
 });
 
-server.listen(PORT, () => console.log(`Voice Khata on http://localhost:${PORT}  (MOCK_VOICE=${MOCK ? 1 : 0})`));
+server.listen(PORT, () => console.log(`Voice Khata on http://localhost:${server.address().port}  (MOCK_VOICE=${MOCK ? 1 : 0}, TTS_SCRIPT=${SCRIPT})`));

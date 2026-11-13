@@ -1,7 +1,7 @@
 'use strict';
 // Deterministic utterance -> intent JSON. No LLM here; an LLM may only be a caller-side fallback.
 const { tokenize, scanTokens, pickMoney, isNumeralWord, isNumeralToken, normText } = require('./numerals');
-const { PACKS, UNION: U, detectLang, render, lexWord } = require('./langpacks');
+const { PACKS, UNION: U, detectLangScore, render, lexWord } = require('./langpacks');
 const { canonicalKey } = require('./translit');
 const G = require('./guardrails');
 
@@ -143,6 +143,21 @@ function splitClauses(toks) {
   return out.filter((c) => c.length);
 }
 
+// Speech-to-text often drops commas: "रमेश का 340 रुपये उधार कल 200 दिया था" is two clauses with no separator.
+// Split a clause that holds 2+ money amounts right after the last direction/tense word before the next amount,
+// so "कल" travels with the second entry. No direction/tense word in between = no split (never guess).
+const BOUNDARY = (w) => U.credit_verbs.has(w) || U.payment_verbs.has(w) || U.give_verbs.has(w) || U.take_verbs.has(w)
+  || U.past.has(w) || U.future.has(w);
+function splitOnAmounts(clause, lang, opts) {
+  const money = scanTokens(clause, lang, opts).filter((r) => r.kind === 'money' && r.confidence >= 0.5);
+  for (let k = 1; k < money.length; k++) {
+    let cut = -1;
+    for (let i = money[k - 1].end; i < money[k].start; i++) if (BOUNDARY(clause[i].t)) cut = i + 1;
+    if (cut > 0) return [clause.slice(0, cut), ...splitOnAmounts(clause.slice(cut), lang, opts)];
+  }
+  return [clause];
+}
+
 const usedSet = (runs) => { const s = new Set(); for (const r of runs) for (let k = r.start; k < r.end; k++) s.add(k); return s; };
 const disambiguate = (base, who, lang, extra = {}) => ({ ...base, intent: 'disambiguate', slot: 'customer', candidates: who.candidates,
   question: render(lang, 'disambiguate', { name: who.name, options: who.candidates.map((c) => c.name).join(' / ') }), ...extra });
@@ -156,7 +171,7 @@ function whenWord(due, today, lang) {
 function parseEntries(toks, base, lang, ctx, today, opts) {
   const entries = [], promises = [];
   let topic = ctx.lastCustomer || null; // {id, name}
-  for (const clause of splitClauses(toks)) {
+  for (const clause of splitClauses(toks).flatMap((c) => splitOnAmounts(c, lang, opts))) {
     const words = clause.map((x) => x.t);
     const runs = scanTokens(clause, lang, opts);
     const money = pickMoney(runs);
@@ -268,9 +283,11 @@ function parse(text, ctx = {}) {
     return r ? { ...x, t: r } : x;
   });
   const words = toks.map((x) => x.t).filter((w) => !PUNCT.has(w));
-  const lang = ctx.lang || detectLang(words);
+  // Parsing always uses the union lexicon; detection is for the REPLY only, and only when it is confident.
+  const detected = detectLangScore(words);
+  const lang = ctx.lang || detected.lang;
   const today = ctx.today || localToday();
-  const base = { text, lang };
+  const base = { text, lang, ...(detected.score >= 2 ? { replyLang: detected.lang } : {}) };
   const has = (set) => words.some((w) => set.has(w));
   // Known customer names are never fuzzy-matched into numbers.
   // A word right before a possessive marker (ka/ke/का/-er/-cha) is a name: never canonical/fuzzy-folded into a number.

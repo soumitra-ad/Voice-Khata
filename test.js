@@ -472,14 +472,14 @@ test('dialog: direction clarify answered with "ne diya" keeps the amount', () =>
 test('native-script replies: number words and templates', () => {
   assert.equal(toWords(34000, 'hi', 'native'), 'तीन सौ चालीस रुपये');
   assert.equal(toWords(250050, 'hi', 'native'), 'दो हज़ार पाँच सौ रुपये और पचास पैसे');
-  assert.equal(toWords(34000, 'bn', 'native'), 'তিন শো চল্লিশ টাকা');
+  assert.equal(toWords(34000, 'bn', 'native'), 'তিনশ চল্লিশ টাকা');
   assert.equal(toWords(2500, 'mr', 'native'), 'पंचवीस रुपये');
   assert.equal(toWords(34000, 'en', 'native'), toWords(34000, 'en')); // English has no native script
   assert.equal(toWords(34000, 'hi'), 'teen sau chaalees rupaye');       // Latin stays the default
 
   assert.equal(speakBalance(23000, 'hi', 'रमेश', 'native'), 'रमेश का दो सौ तीस रुपये बाकी है।');
   assert.match(speakBalance(-5000, 'hi', 'रमेश', 'native'), /एडवांस दिया है/);
-  assert.equal(speakBalance(23000, 'bn', 'রমেশ', 'native'), 'রমেশ এর দুই শো ত্রিশ টাকা বাকি আছে।');
+  assert.equal(speakBalance(23000, 'bn', 'রমেশ', 'native'), 'রমেশ এর দুইশ ত্রিশ টাকা বাকি আছে।');
   const d = G.aiDisclosure('hi', 'native').safeReply;
   assert.match(d, /AI/);
   assert.match(d, /[ऀ-ॿ]/);
@@ -503,6 +503,381 @@ test('server.js holds no user-facing reply strings', () => {
   const keys = new Set(Object.values(PACKS).flatMap((p) => Object.keys(p.templates || {})));
   const fragments = Object.values(PACKS).flatMap((p) => [...Object.values(p.templates || {}), ...Object.values(p.native || {})])
     .flatMap((t) => t.split(/\{\w+\}/)).map((x) => x.trim())
-    .filter((x) => x.length >= 6 && /\p{L}{3}/u.test(x) && !keys.has(x));
+    // Phrases or native-script text only: single English words ("credit") collide with code identifiers.
+    .filter((x) => x.length >= 6 && /\p{L}{3}/u.test(x) && !keys.has(x) && (/\s/.test(x) || /[^\x00-\x7F]/.test(x)));
   for (const frag of new Set(fragments)) assert.ok(!src.includes(frag), `server.js contains reply text: "${frag}"`);
+});
+
+const { cacheKey, MockTimbre, TTS_CACHE } = require('./adapters/timbre');
+const { isNumeralToken, tokenize } = require('./core/numerals');
+
+// Words in a reply, counting each spoken amount (a run of number/scale/currency words) as ONE word.
+function replyWords(text) {
+  let n = 0, inAmount = false;
+  for (const t of tokenize(text)) {
+    if (!/[\p{L}\p{N}]/u.test(t.t)) { inAmount = false; continue; }
+    const num = /^\d/.test(t.t) || isNumeralToken(t);
+    if (!(num && inAmount)) n++;
+    inAmount = num;
+  }
+  return n;
+}
+
+test('native hundreds are joined words in Marathi and Bengali, separate in Hindi', () => {
+  assert.equal(toWords(34000, 'mr', 'native'), 'तीनशे चाळीस रुपये');
+  assert.equal(toWords(34000, 'bn', 'native'), 'তিনশ চল্লিশ টাকা');
+  assert.equal(toWords(34000, 'hi', 'native'), 'तीन सौ चालीस रुपये');
+  assert.equal(toWords(10000, 'mr', 'native'), 'शंभर रुपये');
+  assert.equal(toWords(90000, 'bn', 'native'), 'নয়শ টাকা');
+  assert.equal(toWords(25075000, 'mr', 'native'), 'दोन लाख पन्नास हजार सातशे पन्नास रुपये');
+  assert.equal(toWords(34000, 'mr'), 'teen shambhar chalees rupaye'); // Latin unchanged
+});
+
+test('every reply template is at most 10 words (a {var} counts as one)', () => {
+  const wc = (t) => t.replace(/\{\w+\}/g, 'X').split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
+  for (const [lang, p] of Object.entries(PACKS)) {
+    for (const [set, obj] of [['latin', p.templates], ['native', p.native]]) {
+      for (const [k, t] of Object.entries(obj || {})) assert.ok(wc(t) <= 10, `${lang}.${set}.${k} has ${wc(t)} words`);
+    }
+  }
+});
+
+test('TTS cache key includes script (same text, different script = different audio)', async () => {
+  assert.notEqual(cacheKey('नमस्ते', 'v1', 'hi', 'native'), cacheKey('नमस्ते', 'v1', 'hi', 'latin'));
+  assert.notEqual(cacheKey('x', 'v1', 'hi', 'native'), cacheKey('x', 'v1', 'mr', 'native'));
+  assert.notEqual(cacheKey('x', 'v1', 'hi', 'native'), cacheKey('x', 'v2', 'hi', 'native'));
+  const latin = new MockTimbre({ lang: 'hi', voice: 'v1', script: 'latin' });
+  const native = new MockTimbre({ lang: 'hi', voice: 'v1', script: 'native' });
+  for await (const _ of latin.stream('cache-probe')) { /* fill */ } // eslint-disable-line no-unused-vars
+  assert.ok(TTS_CACHE.has(latin.key('cache-probe')));
+  assert.ok(!TTS_CACHE.has(native.key('cache-probe')), 'native must not reuse latin audio');
+  await native.prewarm(['cache-probe']);
+  assert.ok(TTS_CACHE.has(native.key('cache-probe')));
+});
+
+test('e2e: mock loop over the real WebSocket — disambiguate, short answer, correct, commit, query', { timeout: 30000 }, async () => {
+  const { spawn } = require('node:child_process');
+  const WebSocket = require('ws');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'khata-e2e-'));
+  const srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT: '0', MOCK_VOICE: '1',
+    TTS_SCRIPT: 'native', LEDGER_DB: path.join(dir, 'e2e.db'), TRANSCRIPT_KEY: 'ab'.repeat(32) } });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      let out = '';
+      srv.stdout.on('data', (d) => { out += d; const m = out.match(/localhost:(\d+)/); if (m) resolve(Number(m[1])); });
+      srv.on('exit', (c) => reject(new Error(`server exited ${c}: ${out}`)));
+    });
+    const ws = new WebSocket(`ws://localhost:${port}/ws`);
+    const agent = [], intents = [];
+    let ledger = null, waiter = null;
+    ws.on('message', (d, bin) => {
+      if (bin) return;
+      const m = JSON.parse(String(d));
+      if (m.type === 'agent') agent.push(m.text);
+      if (m.type === 'intent') intents.push(m.intent);
+      if (m.type === 'ledger') ledger = m;
+      if (m.type === 'tts_end') {
+        ws.send(JSON.stringify({ type: 'play_start', t: 1 }));
+        ws.send(JSON.stringify({ type: 'play_end', gen: m.gen }));
+        if (waiter) { const w = waiter; waiter = null; w(); }
+      }
+    });
+    await new Promise((r) => ws.on('open', r));
+    const spoken = () => new Promise((r) => { waiter = r; });
+    let done = spoken();
+    ws.send(JSON.stringify({ type: 'hello', lang: 'hi' }));
+    await done;
+    assert.equal(agent[0], G.aiDisclosure('hi', 'native').safeReply, 'AI disclosure is the literal first turn');
+
+    const turn = async () => {
+      ws.send(JSON.stringify({ type: 'ptt_down' }));
+      for (let i = 0; i < 25; i++) ws.send(Buffer.alloc(640));
+      await new Promise((r) => setTimeout(r, 20));
+      const p = spoken();
+      ws.send(JSON.stringify({ type: 'ptt_up', t: 0 }));
+      await p;
+      return agent[agent.length - 1];
+    };
+    assert.equal(await turn(), 'कौन से रमेश: गली वाला या स्टेशन वाला?');      // "रमेश का 340 उधार, कल 200 दिया था"
+    assert.match(await turn(), /^रमेश: तीन सौ चालीस रुपये उधार, कल दो सौ रुपये जमा। बाकी एक सौ चालीस रुपये। सही है\?$/); // "gali wala"
+    assert.match(await turn(), /चार सौ तीस रुपये उधार.*बाकी दो सौ तीस रुपये/); // "नाही, 430"
+    assert.equal(await turn(), 'लिख लिया। रमेश का दो सौ तीस रुपये बाकी है।'); // "हाँ"
+    assert.equal(await turn(), 'कौन से रमेश: गली वाला या स्टेशन वाला?');      // "रमेश का टोटल?"
+    assert.equal(await turn(), 'रमेश का दो सौ तीस रुपये बाकी है।');            // "गली वाला"
+    assert.deepEqual(intents, ['disambiguate', 'add_entries', 'correct_slot', 'confirm', 'disambiguate', 'query_balance']);
+
+    const [gali, station] = ledger.customers.filter((c) => c.name === 'Ramesh').sort((a, b) => a.id - b.id);
+    assert.equal(gali.balancePaise, 23000);
+    assert.equal(station.balancePaise, 0);
+    for (const t of agent) {
+      assert.doesNotMatch(t.replace(/\bAI\b/g, ''), /[A-Za-z]/, `mixed script in native mode: ${t}`);
+      assert.ok(replyWords(t) <= 10, `reply over 10 words: ${t}`);
+    }
+    ws.close();
+  } finally {
+    srv.kill();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- Real adapters against local fake Gnani servers that enforce the documented protocol (no API calls) ----
+function withEnv(vars, fn) {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, vars);
+  return Promise.resolve().then(fn).finally(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
+}
+const COMMON = { GNANI_API_KEY: 'test-key', GNANI_AUTH_HEADER: 'x-api-key-id', GNANI_AUTH_VALUE: '{key}', GNANI_LANG_MAP: 'hi:hi-IN,mr:mr-IN,bn:bn-IN,en:en-IN' };
+
+test('prisma adapter: headers, exact 1024-byte frames, VAD split joined into ONE final after commit', { timeout: 15000 }, async () => {
+  const { WebSocketServer } = require('ws');
+  const { PrismaAdapter } = require('./adapters/prisma');
+  const wss = new WebSocketServer({ port: 0 });
+  await new Promise((r) => wss.once('listening', r));
+  const conns = [], bad = [];
+  let frames = 0, commits = 0;
+  wss.on('connection', (sock, req) => {
+    conns.push(req.headers);
+    if (!req.headers['language_code']) { sock.close(1008, 'language_code missing'); return; }
+    sock.send(JSON.stringify({ type: 'connected' }));
+    sock.on('message', (d, bin) => {
+      if (bin) {
+        if (d.length !== 1024) bad.push(d.length);
+        frames++;
+        if (frames === 2) sock.send(JSON.stringify({ type: 'speech_start' }));
+        if (frames === 8) sock.send(JSON.stringify({ type: 'transcript', text: 'रमेश का 340', is_final: true })); // VAD split mid-turn
+        if (frames === 9) sock.send(JSON.stringify({ type: 'speech_start' }));
+        return;
+      }
+      if (JSON.parse(String(d)).type === 'commit') {
+        commits++;
+        sock.send(JSON.stringify({ type: 'processing' }));
+        setTimeout(() => sock.send(JSON.stringify({ type: 'transcript', text: 'उधार', is_final: true })), 30);
+      }
+    });
+  });
+  const port = wss.address().port;
+  await withEnv({ ...COMMON, GNANI_STT_WS_URL: `ws://localhost:${port}`,
+    GNANI_STT_HEADERS: '{"model":"prisma-v3.0","language_code":"{lang}","x-sample-rate":"16000"}',
+    GNANI_STT_FRAME_BYTES: '1024', GNANI_STT_FRAME_MS: '32', GNANI_STT_END_MESSAGE: '{"type":"commit"}', GNANI_STT_EVENT_FIELD: 'type',
+    GNANI_STT_FINAL_EVENT: 'transcript', GNANI_STT_SPEECH_EVENT: 'speech_start', GNANI_STT_ERROR_EVENT: 'error', GNANI_STT_TEXT_FIELD: 'text',
+    GNANI_STT_PARTIAL_EVENT: '', GNANI_STT_START_MESSAGE: '' }, async () => {
+    const p = new PrismaAdapter({ lang: 'mr' });
+    const partials = [];
+    p.on('partial', (t) => partials.push(t));
+    p.on('error', () => {});
+    p.connect();
+    await new Promise((r) => p.once('open', r));
+    const finalP = new Promise((r) => p.once('final', r));
+    const t0 = Date.now();
+    p.start();
+    for (let i = 0; i < 25; i++) p.sendPcm(Buffer.alloc(640)); // 500 ms of 20 ms client frames, sent as a burst
+    await new Promise((r) => setTimeout(r, 350));
+    p.end();
+    const final = await finalP;
+    assert.equal(final, 'रमेश का 340 उधार', 'one final for the whole push-to-talk turn');
+    assert.deepEqual(partials, ['रमेश का 340']);
+    assert.deepEqual(bad, [], 'every frame exactly 1024 bytes');
+    assert.equal(frames, Math.ceil((25 * 640) / 1024));
+    assert.equal(commits, 1);
+    assert.ok(Date.now() - t0 < 1500, 'endpoint is not delayed by pacing');
+    const h = conns[0];
+    assert.deepEqual([h['x-api-key-id'], h.model, h.language_code, h['x-sample-rate']], ['test-key', 'prisma-v3.0', 'mr-IN', '16000']);
+
+    // Headers are fixed per connection: switching language reconnects with the new code.
+    p.lang = 'bn';
+    await new Promise((r) => p.once('open', r));
+    assert.equal(conns[1].language_code, 'bn-IN');
+    p.close();
+  });
+  await new Promise((r) => wss.close(r));
+});
+
+test('timbre adapter: hi-IN request, base64 audio, error ends the reply, barge-in never leaks stale audio', { timeout: 15000 }, async () => {
+  const { WebSocketServer } = require('ws');
+  const { TimbreAdapter } = require('./adapters/timbre');
+  const wss = new WebSocketServer({ port: 0 });
+  await new Promise((r) => wss.once('listening', r));
+  const requests = [];
+  let connections = 0;
+  wss.on('connection', (sock, req) => {
+    connections++;
+    assert.equal(req.headers['x-api-key-id'], 'test-key');
+    sock.on('message', (d) => {
+      const r = JSON.parse(String(d));
+      requests.push(r);
+      const marker = requests.length; // every byte of this reply's audio = its request number
+      const chunk = () => JSON.stringify({ type: 'audio', data: { audio: Buffer.alloc(640, marker).toString('base64'), is_final: false } });
+      const rid = `req-${marker}`;
+      sock.send(JSON.stringify({ type: 'start', message: 'Streaming started', request_id: rid }));
+      if (r.text.startsWith('boom')) { sock.send(JSON.stringify({ type: 'error', message: 'Invalid text' })); return; }
+      const n = r.text.startsWith('long') ? 20 : 3;
+      let i = 0;
+      const iv = setInterval(() => {
+        if (sock.readyState !== 1) return clearInterval(iv);
+        if (i++ < n) { sock.send(chunk()); return; }
+        clearInterval(iv);
+        // As observed on the live API: two 'complete' messages, the second (with request_id) a moment later.
+        sock.send(JSON.stringify({ type: 'complete', data: { audio: '', is_final: true } }));
+        setTimeout(() => { if (sock.readyState === 1) sock.send(JSON.stringify({ type: 'complete', message: 'Streaming completed', request_id: rid })); }, 15);
+      }, 10);
+    });
+  });
+  const port = wss.address().port;
+  await withEnv({ ...COMMON, GNANI_TTS_WS_URL: `ws://localhost:${port}`, GNANI_TTS_VOICE: 'Shivani', GNANI_TTS_SAMPLE_RATE: '16000',
+    GNANI_TTS_REQUEST_TEMPLATE: '{"text":"{text}","voice":"{voice}","model":"timbre-v3.0","language":"{lang}","audio_config":{"sample_rate":16000,"container":"raw"}}',
+    GNANI_TTS_AUDIO_FIELD: 'data.audio', GNANI_TTS_EVENT_FIELD: 'type', GNANI_TTS_END_EVENT: 'complete', GNANI_TTS_ERROR_EVENT: 'error', GNANI_TTS_CANCEL_MESSAGE: '' }, async () => {
+    const t = new TimbreAdapter({ lang: 'hi', script: 'native' });
+    const errLog = console.error; console.error = () => {};
+    try {
+      const got = [];
+      for await (const c of t.stream(`नमस्ते ${Date.now()}`)) got.push(c);
+      assert.equal(Buffer.concat(got).length, 3 * 640);
+      assert.equal(requests[0].language, 'hi-IN');
+      assert.equal(requests[0].voice, 'Shivani');
+      assert.equal(requests[0].model, 'timbre-v3.0');
+      assert.match(requests[0].text, /^नमस्ते/);
+
+      const errored = [];
+      for await (const c of t.stream(`boom ${Date.now()}`)) errored.push(c); // must END, not hang
+      assert.equal(errored.length, 0);
+
+      // Barge-in mid-reply: the rest of request 3 must never show up in request 4.
+      let n = 0;
+      for await (const c of t.stream(`long ${Date.now()}`)) { assert.equal(c[0], 3); if (++n === 2) { t.flush(); break; } }
+      const next = [];
+      for await (const c of t.stream(`short ${Date.now()}`)) next.push(c);
+      assert.ok(next.length > 0 && next.every((c) => c.every((b) => b === 4)), 'only the new reply\'s audio');
+      assert.equal(connections, 2, 'barge-in dropped the socket; the next reply reconnected');
+
+      // Back-to-back segments: the late second 'complete' of one reply must not end the next one.
+      const a = [], b = [];
+      for await (const c of t.stream(`seg-a ${Date.now()}`)) a.push(c);
+      for await (const c of t.stream(`seg-b ${Date.now()}`)) b.push(c);
+      assert.equal(a.length, 3);
+      assert.equal(b.length, 3, 'second segment not truncated by the first one\'s late complete');
+    } finally { console.error = errLog; t.close(); }
+  });
+  await new Promise((r) => wss.close(r));
+});
+
+test('.env.example never contains real secrets (it is committed)', () => {
+  const ex = fs.readFileSync(path.join(__dirname, '.env.example'), 'utf8');
+  for (const k of ['GNANI_API_KEY', 'TRANSCRIPT_KEY']) {
+    const m = ex.match(new RegExp(`^${k}=([^#\\n]*)`, 'm'));
+    assert.ok(m, `${k} line present`);
+    assert.equal(m[1].trim(), '', `${k} must be empty in .env.example — put it in .env`);
+  }
+});
+
+test('parser: real Prisma v3.0 transcript (live probe) — no comma between clauses, digits, danda', () => {
+  // Verbatim from npm run probe against wss://api.vachana.ai/stt/v3/stream, 2026-11-13.
+  const r = parse('रमेश का 340 रुपये उधार कल 200 दिया था।', { today: TODAY });
+  assert.equal(r.intent, 'add_entries');
+  assert.deepEqual(r.entries.map((e) => [e.customer.name, e.direction, e.paise, e.date]), [
+    ['Ramesh', 'credit', 34000, TODAY],
+    ['Ramesh', 'payment', 20000, YESTERDAY],
+  ]);
+  assert.deepEqual(parse('Ramesh ko 200 diya Suresh ne 300 diya', { today: TODAY }).entries.map((e) => [e.customer.name, e.direction]),
+    [['Ramesh', 'credit'], ['Suresh', 'payment']]);
+  assert.equal(parse('Ramesh 200 300', { today: TODAY }).intent, 'clarify'); // no direction word between: never guess a split
+});
+
+test('langpacks: reply-language detection returns a score, and ties stay on Hindi', () => {
+  const { detectLangScore } = require('./core/langpacks');
+  const mr = detectLangScore(['kiti', 'baki', 'aahe']);
+  assert.equal(mr.lang, 'mr');
+  assert.ok(mr.score >= 2, 'Marathi sentence must score at least 2');
+  assert.equal(detectLangScore(['ramesh', '340']).score, 0, 'names and digits are not language evidence');
+});
+
+test('parser: confidence-gated replyLang, parsing still on the union lexicon', () => {
+  const mr = parse('kiti baki aahe', { lang: 'hi' });
+  assert.equal(mr.replyLang, 'mr', 'a Marathi utterance asks for a Marathi reply');
+  const bare = parse('ramesh 340', { lang: 'hi' });
+  assert.equal(bare.replyLang, undefined, 'no lexicon evidence means no language switch');
+  const hi = parse('ramesh ka 340 udhaar', { lang: 'bn' });
+  assert.equal(hi.replyLang, 'hi', 'reply language does not change how the words are parsed');
+  assert.equal(hi.intent, 'add_entries', 'Hindi parsed even with a Bengali session language');
+});
+
+test('securestore: list decrypts newest first, and reports rows the key cannot open', () => {
+  const { SecureStore } = require('./core/securestore');
+  const store = new SecureStore(':memory:', 'cd'.repeat(32));
+  store.put(JSON.stringify({ role: 'user', text: 'pehla', at: '2026-11-13T10:00:00Z' }));
+  store.put(JSON.stringify({ role: 'agent', text: 'doosra', at: '2026-11-13T10:00:01Z' }));
+  const rows = store.list(10);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].text, 'doosra');
+  assert.equal(rows[1].role, 'user');
+  assert.equal(store.count(), 2);
+  const wrong = new SecureStore(':memory:', 'ef'.repeat(32));
+  assert.equal(wrong.list(5).length, 0);
+});
+
+test('e2e: typed turns, a real purge, and reseeding over HTTP', { timeout: 30000 }, async () => {
+  const { spawn } = require('node:child_process');
+  const WebSocket = require('ws');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'khata-typed-'));
+  const srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT: '0', MOCK_VOICE: '1',
+    TTS_SCRIPT: 'native', LEDGER_DB: path.join(dir, 'typed.db'), TRANSCRIPT_KEY: 'ab'.repeat(32) } });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      let out = '';
+      srv.stdout.on('data', (d) => { out += d; const m = out.match(/localhost:(\d+)/); if (m) resolve(Number(m[1])); });
+      srv.on('exit', (c) => reject(new Error(`server exited ${c}: ${out}`)));
+    });
+    const ws = new WebSocket(`ws://localhost:${port}/ws`);
+    let ledger = null, waiter = null;
+    ws.on('message', (d, bin) => {
+      if (bin) return;
+      const m = JSON.parse(String(d));
+      if (m.type === 'ledger') ledger = m;
+      if (m.type === 'tts_end') {
+        ws.send(JSON.stringify({ type: 'play_end', gen: m.gen }));
+        if (waiter) { const w = waiter; waiter = null; w(); }
+      }
+    });
+    await new Promise((r) => ws.on('open', r));
+    const spoken = () => new Promise((r) => { waiter = r; });
+    let done = spoken();
+    ws.send(JSON.stringify({ type: 'hello', lang: 'hi' }));
+    await done;
+
+    const say = async (text) => {
+      const p = spoken();
+      ws.send(JSON.stringify({ type: 'text', text }));
+      await p;
+    };
+    await say('ramesh ka 300 udhaar');             // ambiguous: two Rameshes
+    await say('gali wala');                        // completes the pending question
+    await say('haan');                             // commits
+    const ramesh = ledger.customers.find((c) => c.balancePaise === 30000);
+    assert.ok(ramesh, `typed loop committed a 300 rupee credit, got ${JSON.stringify(ledger.customers)}`);
+
+    const tx = await (await fetch(`http://localhost:${port}/transcripts`, { headers: { 'x-khata': '1' } })).json();
+    assert.ok(tx.transcripts.length > 0, 'stored transcripts are readable through the local audit endpoint');
+    assert.ok(tx.transcripts.some((t) => t.role === 'user' && /ramesh/i.test(t.text)));
+
+    const post = (p) => fetch(`http://localhost:${port}${p}`, { method: 'POST', headers: { 'x-khata': '1' } });
+    const withoutHeader = await fetch(`http://localhost:${port}/purge`, { method: 'POST' });
+    assert.equal(withoutHeader.status, 403, 'purge needs its header');
+
+    const purged = await (await post('/purge')).json();
+    assert.equal(purged.customers, 0);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(ledger.customers.length, 0, 'purge leaves no customers behind');
+    assert.equal(ledger.totalPaise, 0);
+
+    const seeded = await (await post('/seed')).json();
+    assert.ok(seeded.customers >= 2, 'seed brings the synthetic roster back');
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(ledger.customers.length >= 2);
+
+    const after = await (await fetch(`http://localhost:${port}/transcripts`, { headers: { 'x-khata': '1' } })).json();
+    assert.equal(after.transcripts.length, 0, 'purge removes the transcripts too');
+    ws.close();
+  } finally {
+    srv.kill();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

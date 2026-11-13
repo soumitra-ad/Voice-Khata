@@ -1,6 +1,6 @@
 'use strict';
 // Pure, deterministic amount normaliser. No network, no LLM.
-const { UNION } = require('./langpacks');
+const { UNION, PACKS } = require('./langpacks');
 const { toLatin, canonicalKey, isNative } = require('./translit');
 
 const words = (s) => s.trim().split(/\s+/);
@@ -321,22 +321,22 @@ const SPEAK = {
 // Native script: the same NATIVE lookup tables, read in reverse (value -> word).
 const SPEAK_NATIVE = {
   hi: { scales: ['करोड़', 'लाख', 'हज़ार', 'सौ'], cur: 'रुपये', paise: 'पैसे', and: 'और' },
-  // TODO native-speaker verify: spoken Marathi glues hundreds (तीनशे), we say तीन शंभर.
   mr: { scales: ['कोटी', 'लाख', 'हजार', 'शंभर'], cur: 'रुपये', paise: 'पैसे', and: 'आणि' },
-  // TODO native-speaker verify: spoken Bengali glues hundreds (তিনশো), we say তিন শো.
   bn: { scales: ['কোটি', 'লাখ', 'হাজার', 'শো'], cur: 'টাকা', paise: 'পয়সা', and: 'আর' },
 };
+// Joined native hundreds (mr तीनशे, bn তিনশ), read once at load. Hindi has none: it says तीन सौ.
+const HUNDREDS = Object.fromEntries(['hi', 'mr', 'bn'].filter((l) => PACKS[l].hundreds_1_9).map((l) => [l, PACKS[l].hundreds_1_9]));
 // script: 'latin' (romanised) or 'native' (Devanagari / Bengali). English has no native form.
 function toWords(paise, lang = 'hi', script = 'latin') {
   const L = TABLES[lang] ? lang : 'hi';
   const nat = script === 'native' && NATIVE[L];
-  const sp = nat ? SPEAK_NATIVE[L] : SPEAK[L], table = nat ? NATIVE[L] : TABLES[L];
+  const sp = nat ? SPEAK_NATIVE[L] : SPEAK[L], table = nat ? NATIVE[L] : TABLES[L], hundreds = nat && HUNDREDS[L];
   const say = (n) => {
     if (n < 100) return table[n];
     const parts = [];
     [1e7, 1e5, 1e3, 100].forEach((s, k) => {
       const q = Math.floor(n / s);
-      if (q) { parts.push(`${say(q)} ${sp.scales[k]}`); n %= s; }
+      if (q) { parts.push(s === 100 && hundreds ? hundreds[q - 1] : `${say(q)} ${sp.scales[k]}`); n %= s; }
     });
     if (n) parts.push(table[n]);
     return parts.join(' ');

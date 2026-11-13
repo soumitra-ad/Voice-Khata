@@ -70,8 +70,21 @@ function translitWord(word, S) {
 const DEVA_RUN = /[ऀ-ॣ॰-ॿ]+/g;
 const BENG_RUN = /[ঀ-৥ৰ-৿]+/g;
 
+// Small LRU memo: partials repeat the same words many times per second. Pure functions only.
+function memo(fn, max = 5000) {
+  const cache = new Map();
+  return (a, b) => {
+    const k = b === undefined ? a : `${b}\u0000${a}`;
+    if (cache.has(k)) { const v = cache.get(k); cache.delete(k); cache.set(k, v); return v; }
+    const v = fn(a, b);
+    cache.set(k, v);
+    if (cache.size > max) cache.delete(cache.keys().next().value);
+    return v;
+  };
+}
+
 // scriptHint ('deva' | 'beng') forces a script; otherwise each run is detected by its code points.
-function toLatin(text, scriptHint) {
+function toLatinRaw(text, scriptHint) {
   let s = String(text || '').normalize('NFC').replace(/[​-‍⁠﻿]/g, '').replace(/[।॥]/g, ' ');
   const pick = (dflt) => (scriptHint === 'deva' ? DEVA : scriptHint === 'beng' ? BENG : dflt);
   s = s.replace(DEVA_RUN, (w) => translitWord(w, pick(DEVA)));
@@ -84,11 +97,14 @@ const isNative = (s) => /[ऀ-৿]/.test(s);
 const lightKey = (tok) => String(tok).toLowerCase().replace(/ee/g, 'i').replace(/oo/g, 'u').replace(/aa/g, 'a');
 
 // Loose key for ASR / transliteration variance. Collides a lot by design: callers must reject ambiguous hits.
-function canonicalKey(tok) {
+function canonicalKeyRaw(tok) {
   let s = String(tok || '').normalize('NFC').replace(/[​-‍⁠﻿]/g, '').replace(/[।॥.,!?'"`:;()\-]/g, '');
   if (isNative(s)) s = toLatin(s);
   return lightKey(s).replace(/o/g, 'a').replace(/sh/g, 's').replace(/w/g, 'v').replace(/z/g, 'j')
     .replace(/(.)\1+/g, '$1').replace(/(.)[aeiou]$/, '$1');
 }
 
-module.exports = { toLatin, canonicalKey, lightKey, isNative };
+const toLatin = memo((text, hint) => toLatinRaw(String(text || ''), hint));
+const canonicalKey = memo((tok) => canonicalKeyRaw(tok));
+
+module.exports = { toLatin, canonicalKey, lightKey, isNative, memo };

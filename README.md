@@ -24,10 +24,16 @@ npm test
 npm start            # http://localhost:3000
 ```
 
-`MOCK_VOICE=1` (the default) runs the whole loop offline: Prisma returns canned transcripts in order
-(`रमेश का 340 उधार, कल 200 दिया था` → `नाही, 430` → `हाँ` → `रमेश का टोटल?`) and Timbre returns a short beep.
+`MOCK_VOICE=1` (the default) runs the whole loop offline: Prisma returns canned transcripts in order and Timbre
+returns a short beep. The synthetic demo roster (`data/demo-roster.json`) has two customers named रमेश (गली / स्टेशन),
+so the script exercises disambiguation with short answers:
+`रमेश का 340 उधार, कल 200 दिया था` → *कौन से रमेश?* → `gali wala` → `नाही, 430` → `हाँ` → `रमेश का टोटल?` → `गली वाला`.
 Open the page, tap **Start**, then hold the button once per utterance. The mic, worklet and frame upload run in mock mode
 too (level meter + frame counter); only the transcript is canned. The latency HUD reads "MOCK — not a real measurement".
+
+Every turn can also be **typed** into the box under the mic button. A typed line takes the exact same server path as a
+recognised final, so the whole loop (disambiguation, correction, commit, query) still demos with no microphone at all —
+and a judge can try any sentence instead of the canned script.
 
 Agent replies are spoken and shown in native script by default (`TTS_SCRIPT=native`: Devanagari / Bengali); set
 `TTS_SCRIPT=latin` for romanised output. User transcripts are always shown exactly as recognised.
@@ -51,35 +57,243 @@ Agent replies are spoken and shown in native script by default (`TTS_SCRIPT=nati
 
 ## Architecture
 
+### System topology
+
 ```mermaid
 flowchart LR
-  subgraph Browser["public/ (dumb client)"]
-    MIC[Mic + AudioWorklet<br/>48k→16k PCM, 20 ms frames<br/>350 ms pre-roll] -->|binary WS| WS
-    PLAY[Web Audio scheduled playback] 
-    UI[PTT button · transcript · ledger · TTFB HUD]
+  subgraph Browser["public/ — dumb client"]
+    MIC["Mic + AudioWorklet<br/>48k→16k PCM · 20 ms frames<br/>350 ms pre-roll ring buffer"]
+    PLAY["Web Audio<br/>scheduled playback"]
+    UI["PTT button · transcript · khata table<br/>TTFB HUD · language select · purge"]
   end
-  WS[server.js<br/>session state machine<br/>IDLE→LISTENING→THINKING→SPEAKING] -->|PCM| PRISMA[adapters/prisma.js]
-  PRISMA -->|WebSocket| GP[(Gnani Prisma v3.0 STT)]
-  PRISMA -->|partial / final| WS
-  WS --> CORE
-  subgraph CORE["core/ (pure, deterministic, no network)"]
-    TR[translit] --> NUM[numerals] --> PAR[parser]
-    PAR --> GR[guardrails]
-    LED[(ledger<br/>SQLite, integer paise)]
-    SS[(securestore<br/>AES-256-GCM transcripts)]
+
+  WS["server.js<br/>session state machine<br/>IDLE → LISTENING → THINKING → SPEAKING"]
+
+  subgraph Adapters["adapters/ — the only place Gnani is called"]
+    P["prisma.js<br/>1024-byte frames · VAD split · final"]
+    T["timbre.js<br/>WS stream · hash cache · flush on barge-in"]
+    CFG["config.js<br/>every URL/header/event from .env"]
   end
-  WS --> LED
-  WS --> SS
-  WS -->|reply text| TIMBRE[adapters/timbre.js<br/>cache by hash]
-  TIMBRE -->|WebSocket| GT[(Gnani Timbre v3.0 TTS)]
-  TIMBRE -->|PCM chunks| PLAY
+
+  subgraph Core["core/ — pure, deterministic, no network, no keys"]
+    TR["translit<br/>Unicode digits, schwa, nukta"]
+    NUM["numerals<br/>0–100 tables, fractions"]
+    PAR["parser<br/>direction · date · customer"]
+    GR["guardrails<br/>lending/diagnosis refusal"]
+    DLG["dialog<br/>pending questions"]
+    LP["langpacks<br/>templates + lexicon union"]
+    LED[("ledger<br/>SQLite · INTEGER paise")]
+    SS[("securestore<br/>AES-256-GCM transcripts")]
+  end
+
+  MIC -->|binary WS| WS
+  WS -->|PCM| P
+  P -->|WebSocket| GP[("Gnani Prisma v3.0<br/>STT")]
+  P -->|partial / final| WS
+  WS --> Core
+  WS -->|reply text| T
+  T -->|WebSocket| GT[("Gnani Timbre v3.0<br/>TTS")]
+  T -->|PCM chunks| WS
+  WS -->|text + PCM| PLAY
+  WS --> UI
 ```
 
 - `core/` is pure logic: no network, no API keys. Numerals, direction, dates and guardrails are deterministic code.
-- `adapters/` is the only place Gnani is called.
+- `adapters/` is the only place Gnani is called. Every endpoint, header and event name is read from `.env` and marked
+  `// TODO: VERIFY FROM GNANI DOCS`.
 - Push-to-talk release is the end of speech. There is no silence timeout.
-- Latency is measured per turn (`speech_end`, `stt_final`, `intent_done`, `commit`, `tts_first_byte`, `play_start`).
-  TTFB = `play_start − speech_end`, shown as rolling p50/p95 in the UI. Targets: p50 < 900 ms, p95 < 1.6 s.
+- Parsing always uses the **union** lexicon across languages. Language detection (`detectLangScore`) only picks the
+  **reply** language, and only from two or more matching lexicon words, so a stray English word cannot flip a Hindi turn.
+- Barge-in has two paths: the browser's 180 ms of speech over agent audio, and two or more new partial words. A single
+  misheard token never interrupts a read-back.
+- TTS pre-warm uses one warm connection per (language, script) for the whole process, not one per session.
+- A `SPEAKING` turn has a watchdog based on the audio actually sent, so a browser that never reports `play_end` cannot
+  leave the session stuck.
+
+### Repository map
+
+| Path | Responsibility |
+|---|---|
+| `server.js` | HTTP + WebSocket, per-client session state, turn dispatch, TTS playback queue, latency metrics |
+| `public/index.html`, `app.js`, `worklet.js` | Mic capture in an AudioWorklet, PTT, PCM playback scheduling, ledger display |
+| `adapters/config.js` | `.env` access, language-code map, auth header construction |
+| `adapters/prisma.js` | Prisma streaming STT: frame sizing, start/end messages, partial/final/error events |
+| `adapters/timbre.js` | Timbre streaming TTS: request template, base64 audio chunks, cache by `(text, script, voice)`, `flush()` |
+| `core/translit.js` → `core/numerals.js` → `core/parser.js` | The utterance pipeline: normalise → numbers → intent |
+| `core/dialog.js` | Turns a short answer ("gali wala", "pehla", "340 wala") into the pending intent |
+| `core/ledger.js` | SQLite schema, atomic entry batches, soft-delete corrections, promises, balance queries |
+| `core/securestore.js` | AES-256-GCM transcript storage and purge CLI |
+| `core/guardrails.js` | AI disclosure template, lending/diagnosis refusal, reminder language lint |
+| `core/langpacks.js` | Per-language templates, reply-script rendering, union lexicon, language detection |
+| `data/demo-roster.json` | Synthetic customers only (two Rameshes, on purpose) |
+| `scripts/probe.js` | Live-mode diagnostic: stream a WAV to Prisma and dump raw events |
+
+### One turn, end to end
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor U as Shopkeeper
+  participant B as Browser
+  participant S as server.js
+  participant P as prisma.js
+  participant G as Prisma v3.0
+  participant C as core/
+  participant L as Ledger
+  participant T as timbre.js
+  participant GT as Timbre v3.0
+
+  U->>B: hold PTT, speak
+  B->>S: ptt_down
+  S->>P: start()
+  P->>G: open WS + start message
+  B->>S: binary PCM (20 ms frames)
+  S->>P: sendPcm (exact frame size)
+  P->>G: audio
+  G-->>P: partial transcript
+  P-->>S: partial
+  S-->>B: partial (barge-in if the agent is speaking)
+  U->>B: release PTT — this IS the endpoint
+  B->>S: ptt_up { t }
+  S->>P: end()
+  P->>G: end message
+  G-->>P: final transcript
+  P-->>S: final
+  S->>C: parse → intent + entries (dates, direction, customer)
+  C-->>S: read-back text + new balance
+  S->>L: provisionalBalance() — not written yet
+  S->>T: stream(segment)
+  T->>GT: synthesize
+  GT-->>T: PCM chunks
+  T-->>S: PCM
+  S-->>B: agent text + tts_start + PCM
+  B-->>U: reads back, asks "सही है?"
+  U->>B: "हाँ"
+  B->>S: final transcript "haan"
+  S->>L: addEntries(all entries, ONE transaction)
+  S-->>U: "लिख लिया" + balance
+```
+
+### Session state machine
+
+```mermaid
+stateDiagram-v2
+  [*] --> IDLE: connection + hello (agent discloses it is an AI)
+  IDLE --> LISTENING: ptt_down
+  LISTENING --> THINKING: ptt_up (end of speech)
+  THINKING --> SPEAKING: reply ready
+  SPEAKING --> IDLE: play_end for the current gen
+  SPEAKING --> LISTENING: barge-in (speech / non-echo partial)
+  LISTENING --> SPEAKING: clarify prompt
+  IDLE --> SPEAKING: language change (discloses again)
+  THINKING --> SPEAKING: parse error → spoken apology
+```
+
+Notes:
+- `lastIntent`, `pendingEntries` and `lastCommit` survive barge-in, so a correction can still target what was read back.
+- `speakGen` invalidates stale audio: any chunk or `play_end` from an older generation is dropped.
+
+### Intent routing
+
+```mermaid
+flowchart TD
+  A["final transcript<br/>(original script, never transliterated)"] --> B["translit + tokenize<br/>fold Unicode digits · canonical keys"]
+  B --> C{"open question?<br/>pendingQuestion"}
+  C -- yes --> D["dialog.answerPending<br/>gali wala · pehla · 340 wala"]
+  C -- no --> E{"speculative parse<br/>matches the final?"}
+  E -- yes --> F["reuse the parse"]
+  E -- no --> G["parser.parse<br/>numerals · ne/ko · tense · customer"]
+  D --> H["intent dispatch"]
+  F --> H
+  G --> H
+
+  H --> I["add_entries → read-back → pending"]
+  H --> J["confirm → commit (atomic)"]
+  H --> K["correct_slot → patch pending<br/>or soft-delete + re-insert"]
+  H --> L["query_balance · query_day_total"]
+  H --> M["undo · create_customer · reminder_optin"]
+  H --> N["promise_note · promise_fulfil"]
+  H --> O["clarify / disambiguate<br/>sets pendingQuestion"]
+  H --> P["refuse<br/>lending · diagnosis"]
+
+  I --> Q["ledger.addEntries<br/>ONE transaction per utterance"]
+  J --> Q
+  K --> R["ledger.correctEntry<br/>undone=1 + new row"]
+  N --> Q
+```
+
+### Data model
+
+```mermaid
+erDiagram
+  CUSTOMERS ||--o{ ENTRIES : "owes"
+  CUSTOMERS ||--o{ PROMISES : "promises"
+  PROMISES ||--o| ENTRIES : "fulfilled by"
+  ENTRIES ||--o| ENTRIES : "replaces (correction)"
+
+  CUSTOMERS {
+    int id PK
+    text name
+    text aliases "comma separated, native script kept"
+    int reminder_opt_in "0 or 1, opt-in only"
+    text created_at
+  }
+  ENTRIES {
+    int id PK
+    int customer_id FK
+    text direction "credit or payment"
+    int amount_paise "INTEGER paise, always > 0"
+    text entry_date "YYYY-MM-DD"
+    text batch_id "one utterance = one batch"
+    int replaces_id FK "set on a correction"
+    int undone "soft delete, 0 or 1"
+    text created_at
+  }
+  PROMISES {
+    int id PK
+    int customer_id FK
+    int amount_paise
+    text due_on
+    text status "open or fulfilled or cancelled"
+    int entry_id FK
+  }
+  AUDIT {
+    int id PK
+    text action
+    int entry_id
+    text detail "stores transcriptId, never the text"
+  }
+  TRANSCRIPTS {
+    int id PK
+    blob ciphertext "AES-256-GCM"
+    blob iv "96-bit, fresh per row"
+    blob auth_tag
+    text created_at
+  }
+```
+
+- **Balance is a signed sum**, never stored: `credit = +`, `payment = −`, over rows where `undone = 0`.
+  The `balances` view does this in SQL; a negative balance is an advance, never "minus baaki".
+- **Corrections never mutate.** `correctEntry()` marks the old row `undone = 1` and inserts a copy with
+  `replaces_id` pointing at it, inside one transaction.
+- **Promises are notes, not money.** They live in their own table and do not move the balance until
+  `fulfilPromise()` writes a real `payment` entry.
+- **One file, two concerns.** `khata.db` holds the ledger tables and the `transcripts` table; transcript rows are
+  encrypted blobs, so a copy of the file without `TRANSCRIPT_KEY` reveals only ciphertext.
+
+### Latency instrumentation
+
+| Mark | Written at | Meaning |
+|---|---|---|
+| `speech_end` | `ptt_up` | PTT release, from the client clock |
+| `stt_final` | Prisma `final` | Transcript available |
+| `intent_done` | after `handle()` | Parse, read-back text and ledger read complete |
+| `commit` | inside `commit()` | Atomic write finished |
+| `tts_first_byte` | first Timbre chunk | Synthesis started |
+| `play_start` | client playback start | Audio is audible |
+
+`TTFB = play_start − speech_end`, both on the client clock, aggregated as rolling p50/p95 over the last 50 turns.
+Targets: **p50 < 900 ms, p95 < 1.6 s**. In `MOCK_VOICE=1` the HUD says "MOCK — not a real measurement".
 
 ## Compliance
 
@@ -90,5 +304,8 @@ flowchart LR
 - **Voices:** stock Timbre voices only. No voice cloning.
 - **Data:** synthetic customers only. The ledger is a local SQLite file. Transcripts are encrypted at rest with
   AES-256-GCM (`TRANSCRIPT_KEY`). Plaintext transcripts are never written to disk; the audit log stores only a transcript id.
-  **Delete all demo data** in the UI, `POST /purge` or `npm run purge -- --all` wipes everything after judging.
+  **Delete all demo data** in the UI, `POST /purge` or `npm run purge -- --all` removes customers, entries, promises,
+  audit rows and transcripts — a real wipe, with no reseed. **Restore demo data** / `POST /seed` puts the synthetic
+  roster back for another run. The local audit view (`GET /transcripts`) decrypts server-side only; nothing is exposed
+  to the browser except when you open that panel.
 - **Secrets:** the API key lives only in `.env` on the server. It is gitignored and never sent to the browser.

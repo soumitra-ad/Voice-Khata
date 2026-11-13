@@ -76,6 +76,7 @@ class Ledger {
     this.q = {
       addCustomer: p('INSERT INTO customers (name, aliases) VALUES (?, ?)'),
       customers: p('SELECT id, name, aliases, reminder_opt_in FROM customers ORDER BY id'),
+      customer: p('SELECT id, name, aliases, reminder_opt_in FROM customers WHERE id = ?'),
       optIn: p('UPDATE customers SET reminder_opt_in = ? WHERE id = ?'),
       insert: p('INSERT INTO entries (customer_id, direction, amount_paise, entry_date, batch_id, replaces_id) VALUES (?, ?, ?, ?, ?, ?)'),
       live: p('SELECT * FROM entries WHERE id = ? AND undone = 0'),
@@ -178,6 +179,11 @@ class Ledger {
   dayTotalPaise(date, direction = 'credit') { return Number(this.q.dayTotal.get(date, direction).t); }
   totalReceivablePaise() { return Number(this.q.receivable.get().t); }
   topDebtors(n = 5) { return this.q.top.all(n).map((r) => ({ customerId: r.customer_id, name: r.name, balancePaise: Number(r.balance_paise) })); }
+
+  customerById(id) {
+    const r = this.q.customer.get(id);
+    return r ? { id: r.id, name: r.name, aliases: r.aliases ? r.aliases.split(',') : [], reminder_opt_in: r.reminder_opt_in } : null;
+  }
 
   // Alias-aware, case-insensitive. Empty query returns everyone (parser context).
   findCustomers(query = '') {
