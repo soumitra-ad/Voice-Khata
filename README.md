@@ -7,6 +7,30 @@ A voice ledger a kirana shopkeeper talks to across the counter.
 
 Gnani Voice Hackathon, PS2.
 
+## What this is
+
+A kirana shop's khata is a paper notebook of who owes what. It is written one-handed, mid-transaction, in a shop
+that is noisy and busy — and the numbers in it decide whether the shop gets paid. Voice Khata replaces the pen with
+speech: the shopkeeper says what happened, the ledger records it, reads the new balance back out loud, and writes
+nothing until it hears "haan".
+
+- **For:** a shopkeeper at the counter, speaking Hindi, Marathi or Bengali, often mixing languages inside one
+  sentence ("Ramesh ka 340 udhaar").
+- **One utterance can be several facts.** "रमेश का 340 उधार, कल 200 दिया था" is two entries on two different dates,
+  committed together or not at all.
+- **The agent asks instead of guessing.** Two customers called Ramesh → "कौन से रमेश?" and a one-word answer settles
+  it. No direction word in the sentence → it asks; it never assumes who owes whom.
+- **Money is never invented.** Amounts, direction and dates come from deterministic code — full 0–100 lookup tables
+  for irregular Indic numerals, case markers (`NE` = paid, `KO` = owed), fraction idioms (`sava`, `dedh`, `paune`),
+  and tense to resolve a bidirectional "kal". An LLM is only a fallback, with a 500 ms abort, so it can never
+  produce a number that reaches the ledger.
+- **Corrections are safe.** "नहीं, 430" soft-deletes the pending entry and re-inserts it; stored amounts are never
+  mutated in place. All money is integer paise, never a float.
+- **It says it is an AI, first, in your language**, before it does any work.
+
+Speak, hear the read-back, confirm. That is the whole interaction — the latency budget for it is under 900 ms from
+the moment the button is released, and the live API measures around 170 ms median.
+
 ## Gnani services used
 
 **Prisma v3.0 STT, Timbre v3.0 TTS (WebSocket streaming).** No telephony. The orchestration loop is our own code
