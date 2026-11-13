@@ -42,6 +42,7 @@
   #transcripts .said { display: block; font-size: 14px; color: var(--fg); }
   details { margin-top: 24px; }
   #start { position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg); z-index: 9; }
+  #start[hidden] { display: none; } /* author rule above would otherwise beat [hidden] and keep the overlay up */
   #start button { font-size: 22px; padding: 18px 28px; border-radius: 16px; border: 0; background: var(--accent); color: #fff; }
   #note { color: var(--accent); font-size: 13px; min-height: 1em; }
 </style>

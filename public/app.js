@@ -57,7 +57,10 @@ function line(cls, text) {
 }
 
 async function start() {
-  $('start').hidden = true;
+  // Belt and braces: an author `display` rule can beat the [hidden] attribute, so clear it inline too.
+  const overlay = $('start');
+  overlay.hidden = true;
+  overlay.style.display = 'none';
   ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
   await ctx.resume();
   try {
